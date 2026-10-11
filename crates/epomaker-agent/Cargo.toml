@@ -1,0 +1,29 @@
+[package]
+name = "epomaker-agent"
+description = "Tray agent for Open Epomaker Panel: per-application profiles, live effects, battery warnings"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "epomaker-agent"
+path = "src/main.rs"
+
+[dependencies]
+epomaker-core = { workspace = true }
+epomaker-host = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+png = "0.18"
+notify-rust = "4"
+ctrlc = { version = "3.5", features = ["termination"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = { version = "0.3", default-features = false, features = ["blocking", "async-io"] }
+
+[target.'cfg(windows)'.dependencies]
+tray-icon = "0.26"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging"] }

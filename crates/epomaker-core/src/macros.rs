@@ -50,6 +50,30 @@ pub enum MacroError {
     BadSlot(u8),
 }
 
+/// A macro saved to a file, independent of any keyboard.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MacroFile {
+    pub format: u32,
+    pub name: String,
+    #[serde(flatten)]
+    pub r#macro: Macro,
+}
+
+impl MacroFile {
+    pub fn new(name: impl Into<String>, m: Macro) -> Self {
+        MacroFile { format: 1, name: name.into(), r#macro: m }
+    }
+
+    pub fn load(path: &std::path::Path) -> Result<MacroFile, crate::Error> {
+        Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
+    }
+
+    pub fn save(&self, path: &std::path::Path) -> Result<(), crate::Error> {
+        std::fs::write(path, serde_json::to_string_pretty(self)?)?;
+        Ok(())
+    }
+}
+
 impl Macro {
     /// Serializes to the 256-byte slot layout (vendor `setMacro`).
     pub fn encode(&self) -> Result<[u8; MACRO_SLOT_LEN], MacroError> {
@@ -230,6 +254,21 @@ mod tests {
         let d = Macro::decode(&buf);
         assert_eq!(d.repeat_count, 1);
         assert_eq!(d.events[..4], m.events[..4]);
+    }
+
+    #[test]
+    fn file_roundtrip() {
+        let m = Macro {
+            repeat_count: 2,
+            events: vec![MacroEvent::KeyDown(4), MacroEvent::Delay(300), MacroEvent::KeyUp(4)],
+        };
+        let f = MacroFile::new("hello", m.clone());
+        let path = std::env::temp_dir().join(format!("epomaker-macro-{}.json", std::process::id()));
+        f.save(&path).unwrap();
+        let back = MacroFile::load(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+        assert_eq!(back.r#macro, m);
+        assert_eq!(back.name, "hello");
     }
 
     #[test]

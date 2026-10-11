@@ -7,7 +7,8 @@ arch=('x86_64')
 url="https://github.com/blzkz/open-epomaker-panel-control"
 license=('MIT')
 depends=('gcc-libs' 'glibc' 'systemd-libs' 'libxkbcommon' 'libglvnd' 'hicolor-icon-theme')
-optdepends=('wayland: Wayland sessions'
+optdepends=('libpulse: music-follow effects (parec)'
+            'wayland: Wayland sessions'
             'libx11: X11 sessions'
             'libxcursor: X11 sessions'
             'libxrandr: X11 sessions'
@@ -28,7 +29,7 @@ prepare() {
 build() {
   cd "$(_srcdir)"
   export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
-  cargo build --frozen --release -p epomaker-cli -p epomaker-gui
+  cargo build --frozen --release -p epomaker-cli -p epomaker-gui -p epomaker-agent
 }
 
 check() {
@@ -41,8 +42,10 @@ package() {
   cd "$(_srcdir)"
   install -Dm755 target/release/epomaker-panel "$pkgdir/usr/bin/epomaker-panel"
   install -Dm755 target/release/epomaker "$pkgdir/usr/bin/epomaker"
+  install -Dm755 target/release/epomaker-agent "$pkgdir/usr/bin/epomaker-agent"
   install -Dm644 packaging/linux/70-epomaker.rules "$pkgdir/usr/lib/udev/rules.d/70-epomaker.rules"
   install -Dm644 packaging/linux/open-epomaker-panel.desktop "$pkgdir/usr/share/applications/open-epomaker-panel.desktop"
+  install -Dm644 packaging/linux/open-epomaker-agent.desktop "$pkgdir/usr/share/applications/open-epomaker-agent.desktop"
   install -Dm644 packaging/icons/open-epomaker-panel.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/open-epomaker-panel.svg"
   install -Dm644 packaging/icons/open-epomaker-panel.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/open-epomaker-panel.png"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"

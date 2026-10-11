@@ -1,13 +1,13 @@
 [workspace]
 resolver = "2"
-members = ["crates/epomaker-core", "crates/epomaker-host", "crates/epomaker-cli", "crates/epomaker-gui"]
+members = ["crates/epomaker-core", "crates/epomaker-host", "crates/epomaker-cli", "crates/epomaker-gui", "crates/epomaker-agent"]
 
 [workspace.package]
 version = "0.2.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/blzkz/open-epomaker-panel-control"
-rust-version = "1.88"
+rust-version = "1.89"
 
 [workspace.dependencies]
 epomaker-core = { path = "crates/epomaker-core" }

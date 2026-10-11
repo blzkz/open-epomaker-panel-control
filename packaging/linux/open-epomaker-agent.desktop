@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Open Epomaker Agent
+GenericName=Keyboard tray agent
+Comment=Per-application keyboard profiles, music and screen lighting effects
+Exec=epomaker-agent
+Icon=open-epomaker-panel
+Terminal=false
+Categories=Settings;HardwareSettings;
+Keywords=keyboard;epomaker;tray;profile;music;

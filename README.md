@@ -24,9 +24,16 @@ on the RongYuan YC500 platform (see [Supported keyboards](#supported-keyboards))
 | Debounce, wireless sleep timers, automatic OS detection | ✅ | ✅ |
 | Full backup / restore to JSON, factory reset | ✅ | ✅ |
 | Demo mode with an emulated keyboard (no hardware needed) | ✅ | ✅ |
+| Music-follow and screen-color effects (streamed from the PC) | | ✅ |
+| CPU load bar on the number row (software effect) | | ✅ |
+| Macro library: export/import macros as files, automatic free slot | | ✅ |
+| JSON output and shell completions | | ✅ |
 
-Not implemented on purpose: firmware updates, TH80 X screen uploads, and music/screen
-"follow" effects (those need the PC to stream data).
+The **tray agent** (`epomaker-agent`) runs in the background: switches the onboard profile
+when the focused application matches a rule, keeps the music / screen / CPU effects
+running, warns when a wireless keyboard's battery is low and reconnects automatically.
+
+Not implemented on purpose: firmware updates and TH80 X screen uploads.
 
 ## Supported keyboards
 
@@ -117,17 +124,51 @@ epomaker macro set 0 "down:LeftShift down:H delay:30 up:H up:LeftShift" --repeat
 epomaker keymap set F5 macro:0:toggle
 epomaker color set Esc ff0000
 epomaker backup my-th80.json
+epomaker live music --meter                      # lights follow the PC's audio (Ctrl+C stops)
+epomaker live screen                             # average screen color (Windows, Linux X11)
+epomaker live cpu                                # CPU usage bar on the number row
+epomaker macro export 0 hello.json
+epomaker macro import hello.json --bind F5 --mode toggle
+epomaker --json info                             # machine-readable output
+epomaker completions bash > ~/.local/share/bash-completion/completions/epomaker
 epomaker --demo info                             # anything works on the emulator too
 ```
 
 Use `epomaker keymap actions` to list key, mouse and function names, and `--trace` to
 print every report sent to the keyboard.
 
+### Tray agent
+
+`epomaker-agent` (or *Open Epomaker Agent* in the applications menu) adds a tray icon with
+the active profile, battery, live effects and per-application profiles. Rules live in
+`~/.config/open-epomaker-panel/agent.json` (Windows: `%APPDATA%\open-epomaker-panel\agent.json`):
+
+```json
+{
+  "per_app_profiles": true,
+  "default_profile": 1,
+  "rules": [
+    { "app": "steam_app_*", "profile": 2 },
+    { "app": "code", "profile": 3 }
+  ],
+  "battery_warning_percent": 20,
+  "live_effect": null
+}
+```
+
+`app` is the executable name on Windows (`game.exe`) and the window class on Linux
+(`firefox`, `steam_app_570`); `*` is a wildcard. Focus tracking works on Windows, on Linux
+X11 sessions and on KDE Plasma (also Wayland, through a small KWin script). Music needs
+`parec` (PulseAudio/PipeWire) on Linux; the screen color is not available on Wayland. When
+you open the control panel from the tray, the agent lets go of the keyboard until it closes.
+
 ## Project layout
 
 ```
 crates/epomaker-core   protocol, device database, HID transport, firmware emulator
+crates/epomaker-host   PC-side integrations: audio/screen capture, focused app, CPU usage
 crates/epomaker-cli    `epomaker` command line tool
+crates/epomaker-agent  `epomaker-agent` tray agent
 crates/epomaker-gui    `epomaker-panel` desktop app (egui)
 docs/PROTOCOL.md       the wire protocol
 docs/REVERSE_ENGINEERING.md   how it was obtained, how to add more models

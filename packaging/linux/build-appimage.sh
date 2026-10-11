@@ -11,6 +11,7 @@ APPDIR="$WORK/AppDir"
 
 install -Dm755 "$ROOT/target/release/epomaker-panel" "$APPDIR/usr/bin/epomaker-panel"
 install -Dm755 "$ROOT/target/release/epomaker" "$APPDIR/usr/bin/epomaker"
+install -Dm755 "$ROOT/target/release/epomaker-agent" "$APPDIR/usr/bin/epomaker-agent"
 install -Dm644 "$ROOT/packaging/linux/open-epomaker-panel.desktop" "$APPDIR/usr/share/applications/open-epomaker-panel.desktop"
 install -Dm644 "$ROOT/packaging/icons/open-epomaker-panel.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/open-epomaker-panel.png"
 install -Dm644 "$ROOT/packaging/linux/70-epomaker.rules" "$APPDIR/usr/share/open-epomaker-panel/70-epomaker.rules"
@@ -18,9 +19,10 @@ cp "$APPDIR/usr/share/applications/open-epomaker-panel.desktop" "$APPDIR/"
 cp "$ROOT/packaging/icons/open-epomaker-panel.png" "$APPDIR/open-epomaker-panel.png"
 cat > "$APPDIR/AppRun" <<'RUN'
 #!/bin/sh
-# `open-epomaker-panel.AppImage cli <args>` runs the command line tool
+# `… .AppImage cli <args>` runs the command line tool, `… .AppImage agent` the tray agent
 HERE="$(dirname "$(readlink -f "$0")")"
 if [ "$1" = "cli" ]; then shift; exec "$HERE/usr/bin/epomaker" "$@"; fi
+if [ "$1" = "agent" ]; then shift; exec "$HERE/usr/bin/epomaker-agent" "$@"; fi
 exec "$HERE/usr/bin/epomaker-panel" "$@"
 RUN
 chmod +x "$APPDIR/AppRun"

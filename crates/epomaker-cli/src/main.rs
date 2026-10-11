@@ -169,6 +169,11 @@ enum LiveCmd {
         #[arg(long)]
         seconds: Option<u64>,
     },
+    /// CPU usage as a green-to-red bar on the number row (custom per-key mode).
+    Cpu {
+        #[arg(long)]
+        seconds: Option<u64>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -211,6 +216,20 @@ enum MacroCmd {
     },
     /// Slots referenced by key bindings.
     Used,
+    /// Save a macro slot to a JSON file.
+    Export { slot: u8, file: String },
+    /// Load a macro file into a slot (default: the first free one) and optionally bind it.
+    Import {
+        file: String,
+        #[arg(long)]
+        slot: Option<u8>,
+        /// Key to bind the macro to on profile 1 (e.g. F5).
+        #[arg(long)]
+        bind: Option<String>,
+        /// repeat | toggle | hold
+        #[arg(long, default_value = "repeat")]
+        mode: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -405,6 +424,7 @@ fn live(kb: &mut Keyboard, cmd: LiveCmd) -> Result<(), Error> {
             (LiveEffect::Music(mode), Some(base), seconds, meter)
         }
         LiveCmd::Screen { seconds } => (LiveEffect::Screen, None, seconds, false),
+        LiveCmd::Cpu { seconds } => (LiveEffect::CpuLoad, None, seconds, false),
     };
     if kb.model.caps(effect.light_mode()).is_none() {
         return Err(Error::InvalidArgument(format!(
@@ -794,6 +814,30 @@ fn macros(kb: &mut Keyboard, cmd: MacroCmd) -> Result<(), Error> {
             }
             kb.write_macro(slot, &Macro { repeat_count: repeat, events: ev })?;
             println!("Macro {slot} stored. Bind it with: epomaker keymap set <KEY> macro:{slot}");
+        }
+        MacroCmd::Export { slot, file } => {
+            let m = kb.read_macro(slot)?;
+            let name =
+                std::path::Path::new(&file).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            epomaker_core::macros::MacroFile::new(name, m).save(std::path::Path::new(&file))?;
+            println!("Macro {slot} saved to {file}");
+        }
+        MacroCmd::Import { file, slot, bind, mode } => {
+            let f = epomaker_core::macros::MacroFile::load(std::path::Path::new(&file))?;
+            let slot = match slot {
+                Some(s) => s,
+                None => {
+                    kb.first_free_macro_slot()?.ok_or_else(|| Error::InvalidArgument("no free macro slot".into()))?
+                }
+            };
+            kb.write_macro(slot, &f.r#macro)?;
+            println!("Macro \"{}\" stored in slot {slot}", f.name);
+            if let Some(key) = bind {
+                let i = find_key(kb, &key)?;
+                let a = parse_action(kb, i, &format!("macro:{slot}:{mode}"))?;
+                kb.set_key(Layer::Profile(0), i, a)?;
+                println!("{} -> {}", key_label(kb, i), describe_action(a));
+            }
         }
         MacroCmd::Used => {
             let u = kb.used_macro_slots()?;

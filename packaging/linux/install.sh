@@ -13,8 +13,10 @@ fi
 PREFIX="${PREFIX:-/usr/local}"
 sudo install -Dm755 "$BIN/epomaker-panel" "$PREFIX/bin/epomaker-panel"
 sudo install -Dm755 "$BIN/epomaker" "$PREFIX/bin/epomaker"
+[ -x "$BIN/epomaker-agent" ] && sudo install -Dm755 "$BIN/epomaker-agent" "$PREFIX/bin/epomaker-agent"
 sudo install -Dm644 "$HERE/70-epomaker.rules" /etc/udev/rules.d/70-epomaker.rules
 sudo install -Dm644 "$HERE/open-epomaker-panel.desktop" "$PREFIX/share/applications/open-epomaker-panel.desktop"
+sudo install -Dm644 "$HERE/open-epomaker-agent.desktop" "$PREFIX/share/applications/open-epomaker-agent.desktop"
 sudo install -Dm644 "$ICONS/open-epomaker-panel.svg" "$PREFIX/share/icons/hicolor/scalable/apps/open-epomaker-panel.svg"
 sudo udevadm control --reload-rules
 sudo udevadm trigger --subsystem-match=hidraw

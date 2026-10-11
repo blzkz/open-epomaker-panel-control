@@ -21,6 +21,11 @@ plataforma RongYuan YC500 (ver [Teclados soportados](#teclados-soportados)).
 - Copia de seguridad y restauración completas en JSON, y restablecimiento de fábrica.
 - Modo demo con un teclado emulado, sin necesidad de hardware.
 - Interfaz gráfica (español o inglés) y herramienta de línea de comandos.
+- Efectos que siguen la música y el color de la pantalla, y barra de carga de CPU (`epomaker live …`).
+- Biblioteca de macros (exportar/importar), salida `--json` y autocompletado para la shell.
+- **Agente de bandeja** (`epomaker-agent`): cambia de perfil según la aplicación activa,
+  mantiene los efectos en vivo, avisa de batería baja y se reconecta solo. Las reglas están en
+  `~/.config/open-epomaker-panel/agent.json`; funciona en Windows, X11 y KDE Plasma (también Wayland).
 
 ## Teclados soportados
 

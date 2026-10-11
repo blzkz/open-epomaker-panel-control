@@ -2,7 +2,9 @@
 //!
 //! * Windows: executable file name of the foreground window's process (e.g. `game.exe`).
 //! * Linux X11: `WM_CLASS` of `_NET_ACTIVE_WINDOW` (e.g. `firefox`).
-//! * Linux Wayland: not available in general (no standard protocol exposes it).
+//! * Linux on KDE Plasma (X11 or Wayland): a small KWin script reports `resourceClass`
+//!   over D-Bus.
+//! * Other Wayland compositors: not available (no standard protocol exposes it).
 
 use crate::HostError;
 
@@ -29,8 +31,17 @@ mod imp {
     }
 
     pub fn tracker() -> Result<Box<dyn ActiveWindow>, HostError> {
+        let kde = std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| d.to_uppercase().contains("KDE"));
+        if kde {
+            match kwin::KWinTracker::start() {
+                Ok(t) => return Ok(Box::new(t)),
+                Err(e) => log::warn!("KWin active-window script unavailable: {e}"),
+            }
+        }
         if std::env::var_os("WAYLAND_DISPLAY").is_some() && std::env::var_os("EPOMAKER_FORCE_X11_CAPTURE").is_none() {
-            return Err(HostError::Unsupported("active window detection on Wayland (use an X11 session)"));
+            return Err(HostError::Unsupported(
+                "active window detection on this Wayland desktop (KDE Plasma or X11 needed)",
+            ));
         }
         let err = |e: &dyn std::fmt::Display| HostError::Window(e.to_string());
         let (conn, screen) = x11rb::connect(None).map_err(|e| err(&e))?;
@@ -38,6 +49,115 @@ mod imp {
         let active =
             conn.intern_atom(false, b"_NET_ACTIVE_WINDOW").map_err(|e| err(&e))?.reply().map_err(|e| err(&e))?.atom;
         Ok(Box::new(X11 { conn, root, active }))
+    }
+
+    /// KDE Plasma: KWin runs a tiny script that calls us back on every focus change.
+    mod kwin {
+        use super::*;
+        use std::sync::{Arc, Mutex};
+
+        const IFACE: &str = "io.github.blzkz.OpenEpomaker.ActiveWindow";
+        const PLUGIN: &str = "open-epomaker-window-tracker";
+
+        struct Receiver {
+            current: Arc<Mutex<Option<String>>>,
+        }
+
+        #[zbus::interface(name = "io.github.blzkz.OpenEpomaker.ActiveWindow")]
+        impl Receiver {
+            fn update(&self, class: String) {
+                let class = class.trim().to_lowercase();
+                *self.current.lock().unwrap() = if class.is_empty() { None } else { Some(class) };
+            }
+        }
+
+        pub struct KWinTracker {
+            conn: zbus::blocking::Connection,
+            plugin: String,
+            script: std::path::PathBuf,
+            current: Arc<Mutex<Option<String>>>,
+        }
+
+        impl KWinTracker {
+            pub fn start() -> Result<KWinTracker, HostError> {
+                let err = |e: &dyn std::fmt::Display| HostError::Window(e.to_string());
+                let pid = std::process::id();
+                let service = format!("io.github.blzkz.OpenEpomaker.p{pid}");
+                let current = Arc::new(Mutex::new(None));
+                let conn = zbus::blocking::connection::Builder::session()
+                    .and_then(|b| b.name(service.as_str()))
+                    .and_then(|b| b.serve_at("/ActiveWindow", Receiver { current: current.clone() }))
+                    .and_then(|b| b.build())
+                    .map_err(|e| err(&e))?;
+                // a fixed name lets a new tracker replace a script left behind by a crash
+                let plugin = PLUGIN.to_string();
+                let _ = conn.call_method(
+                    Some("org.kde.KWin"),
+                    "/Scripting",
+                    Some("org.kde.kwin.Scripting"),
+                    "unloadScript",
+                    &(plugin.as_str(),),
+                );
+                let dir = std::env::var_os("XDG_RUNTIME_DIR")
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(std::env::temp_dir);
+                let script = dir.join(format!("{plugin}.js"));
+                std::fs::write(
+                    &script,
+                    format!(
+                        r#"function report(w) {{
+    callDBus("{service}", "/ActiveWindow", "{IFACE}", "Update", w ? String(w.resourceClass || "") : "");
+}}
+if (workspace.windowActivated) {{ workspace.windowActivated.connect(report); report(workspace.activeWindow); }}
+else {{ workspace.clientActivated.connect(report); report(workspace.activeClient); }}
+"#
+                    ),
+                )
+                .map_err(|e| err(&e))?;
+                let reply = conn
+                    .call_method(
+                        Some("org.kde.KWin"),
+                        "/Scripting",
+                        Some("org.kde.kwin.Scripting"),
+                        "loadScript",
+                        &(script.to_string_lossy().as_ref(), plugin.as_str()),
+                    )
+                    .map_err(|e| err(&e))?;
+                let id: i32 = reply.body().deserialize().map_err(|e| err(&e))?;
+                if id < 0 {
+                    return Err(HostError::Window("KWin refused the script".into()));
+                }
+                // Plasma 6 exposes /Scripting/Script<id>, Plasma 5 /<id>
+                let started = [format!("/Scripting/Script{id}"), format!("/{id}")].iter().any(|path| {
+                    conn.call_method(Some("org.kde.KWin"), path.as_str(), Some("org.kde.kwin.Script"), "run", &())
+                        .is_ok()
+                });
+                let tracker = KWinTracker { conn, plugin, script, current };
+                if !started {
+                    return Err(HostError::Window("could not start the KWin script".into()));
+                }
+                Ok(tracker)
+            }
+        }
+
+        impl Drop for KWinTracker {
+            fn drop(&mut self) {
+                let _ = self.conn.call_method(
+                    Some("org.kde.KWin"),
+                    "/Scripting",
+                    Some("org.kde.kwin.Scripting"),
+                    "unloadScript",
+                    &(self.plugin.as_str(),),
+                );
+                let _ = std::fs::remove_file(&self.script);
+            }
+        }
+
+        impl ActiveWindow for KWinTracker {
+            fn current(&mut self) -> Result<Option<String>, HostError> {
+                Ok(self.current.lock().unwrap().clone())
+            }
+        }
     }
 
     impl ActiveWindow for X11 {

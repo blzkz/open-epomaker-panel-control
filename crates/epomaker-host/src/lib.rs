@@ -3,6 +3,7 @@
 //! that stream the "music follow" / "screen color" effects to a keyboard.
 
 pub mod audio;
+pub mod cpu;
 pub mod screen;
 pub mod stream;
 pub mod window;
@@ -17,6 +18,8 @@ pub enum HostError {
     Window(String),
     #[error("not supported on this system: {0}")]
     Unsupported(&'static str),
+    #[error("{0}")]
+    Other(String),
     #[error(transparent)]
     Keyboard(#[from] epomaker_core::Error),
 }

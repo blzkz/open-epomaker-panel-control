@@ -273,6 +273,12 @@ impl Keyboard {
         Ok(used)
     }
 
+    /// First macro slot not referenced by any layer.
+    pub fn first_free_macro_slot(&mut self) -> Result<Option<u8>, Error> {
+        let used = self.used_macro_slots()?;
+        Ok((0..self.model.macro_slots).find(|s| !used.contains(s)))
+    }
+
     /// All layers of this model: base layers of the 3 profiles and the Fn layers.
     pub fn layers(&self) -> Vec<Layer> {
         let mut v: Vec<Layer> = (0..settings::PROFILES).map(Layer::Profile).collect();
