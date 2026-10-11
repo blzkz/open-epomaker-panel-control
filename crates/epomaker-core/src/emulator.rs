@@ -3,7 +3,8 @@
 //! Used by the test-suite and by the `--demo` mode of the CLI/GUI so the whole
 //! application can be exercised without hardware. It validates checksums the same
 //! way the protocol requires and answers queries with the layouts the vendor
-//! software expects.
+//! software expects. [`Fault`]s make it misbehave on purpose, to test the
+//! verify-after-write and self-test code paths.
 
 use crate::devices::{Database, ModelInfo};
 use crate::protocol::{byte_sum, cmd, Report, REPORT_LEN};
@@ -14,6 +15,28 @@ use std::sync::{Arc, Mutex};
 const PROFILES: usize = 3;
 const PIC_SLOTS: usize = 3;
 const PIC_LEN: usize = 600;
+
+/// A firmware misbehaviour injected with [`Emulator::inject`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fault {
+    /// Acknowledge reports with this command id but ignore them (a dropped write).
+    DropWrites(u8),
+    /// XOR byte `byte` of incoming reports with this command id with `xor` before applying them.
+    CorruptWrite { command: u8, byte: usize, xor: u8 },
+    /// XOR byte `byte` of the answers to this command id with `xor`.
+    CorruptResponse { command: u8, byte: usize, xor: u8 },
+    /// Fail the transfer of reports with this command id with an I/O error.
+    Fail(u8),
+}
+
+impl Fault {
+    fn command(self) -> u8 {
+        match self {
+            Fault::DropWrites(c) | Fault::Fail(c) => c,
+            Fault::CorruptWrite { command, .. } | Fault::CorruptResponse { command, .. } => command,
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct EmulatorState {
@@ -34,6 +57,8 @@ pub struct EmulatorState {
     /// Every report received, in order (with checksum).
     pub log: Vec<Report>,
     pub checksum_errors: usize,
+    /// Active faults and how many more reports each one affects (`None` = forever).
+    pub faults: Vec<(Fault, Option<usize>)>,
 }
 
 impl EmulatorState {
@@ -55,9 +80,24 @@ impl EmulatorState {
             pics: vec![],
             log: vec![],
             checksum_errors: 0,
+            faults: vec![],
         };
         s.factory_reset(model);
         s
+    }
+
+    /// Consumes one use of the first active fault of kind `pick` that applies to `command`.
+    fn take_fault(&mut self, command: u8, pick: impl Fn(&Fault) -> bool) -> Option<Fault> {
+        let i = self.faults.iter().position(|(f, _)| f.command() == command && pick(f))?;
+        let fault = self.faults[i].0;
+        match &mut self.faults[i].1 {
+            Some(1) => {
+                self.faults.remove(i);
+            }
+            Some(n) => *n -= 1,
+            None => {}
+        }
+        Some(fault)
     }
 
     fn factory_reset(&mut self, model: &ModelInfo) {
@@ -104,19 +144,53 @@ impl Emulator {
         Ok(Emulator { state: Arc::new(Mutex::new(EmulatorState::new(raw, model))), model, pending: [0; REPORT_LEN] })
     }
 
-    fn handle(&mut self, r: &Report) -> Result<(), Error> {
+    /// Makes the firmware misbehave until [`Emulator::clear_faults`].
+    pub fn inject(&self, fault: Fault) {
+        self.state.lock().unwrap().faults.push((fault, None));
+    }
+
+    /// Makes the firmware misbehave for the next `times` matching reports only.
+    pub fn inject_times(&self, fault: Fault, times: usize) {
+        if times > 0 {
+            self.state.lock().unwrap().faults.push((fault, Some(times)));
+        }
+    }
+
+    pub fn clear_faults(&self) {
+        self.state.lock().unwrap().faults.clear();
+    }
+
+    fn handle(&mut self, report: &Report) -> Result<(), Error> {
         let mut s = self.state.lock().unwrap();
-        s.log.push(*r);
-        let c = r[0];
+        s.log.push(*report);
+        let c = report[0];
         let ok = match c {
-            cmd::SET_LED => r[8] == !byte_sum(&r[..8]),
-            _ => r[7] == !byte_sum(&r[..7]),
+            cmd::SET_LED => report[8] == !byte_sum(&report[..8]),
+            _ => report[7] == !byte_sum(&report[..7]),
         };
         if !ok {
             s.checksum_errors += 1;
-            return Err(Error::Protocol(format!("emulator: bad checksum in {:02x?}", &r[..9])));
+            return Err(Error::Protocol(format!("emulator: bad checksum in {:02x?}", &report[..9])));
+        }
+        if s.take_fault(c, |f| matches!(f, Fault::Fail(_))).is_some() {
+            return Err(Error::Hid(format!("emulator: injected I/O error on command {c:02x}")));
         }
         let mut resp = [0u8; REPORT_LEN];
+        if s.take_fault(c, |f| matches!(f, Fault::DropWrites(_))).is_some() {
+            drop(s);
+            resp[0] = c;
+            self.pending = resp;
+            return Ok(());
+        }
+        let mut r = *report;
+        if let Some(Fault::CorruptWrite { byte, xor, .. }) =
+            s.take_fault(c, |f| matches!(f, Fault::CorruptWrite { .. }))
+        {
+            if byte < REPORT_LEN {
+                r[byte] ^= xor;
+            }
+        }
+        let r = &r;
         resp[0] = c;
         let p = |x: u8| (x as usize).min(PROFILES - 1);
         let data = &r[8..];
@@ -228,6 +302,13 @@ impl Emulator {
                 }
             }
             _ => {}
+        }
+        if let Some(Fault::CorruptResponse { byte, xor, .. }) =
+            s.take_fault(c, |f| matches!(f, Fault::CorruptResponse { .. }))
+        {
+            if byte < REPORT_LEN {
+                resp[byte] ^= xor;
+            }
         }
         drop(s);
         self.pending = resp;

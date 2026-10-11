@@ -135,6 +135,11 @@ driver type 2), and read with 8 × `89 PP NN` (64 data bytes each).
 Written with `0x16` in 56-byte chunks (only non-empty chunks are sent, the last one has
 byte 4 = 1); read with `8B SS CC` (4 × 64 bytes).
 
+An empty slot therefore produces no packet at all with the vendor's routine. To empty a
+slot (`Keyboard::clear_macro`, used by the self-test) this implementation sends chunk 0
+zeroed with the last-chunk flag set: `16 SS 00 38 01 …` followed by 56 zero bytes. This
+packet is not used by the vendor software and has not been tested on hardware yet.
+
 ## Per-key colours
 
 Custom effect (mode 13) colours are stored as RGB triplets indexed by matrix entry

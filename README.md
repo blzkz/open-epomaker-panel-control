@@ -24,6 +24,8 @@ on the RongYuan YC500 platform (see [Supported keyboards](#supported-keyboards))
 | Debounce, wireless sleep timers, automatic OS detection | ✅ | ✅ |
 | Full backup / restore to JSON, factory reset | ✅ | ✅ |
 | Demo mode with an emulated keyboard (no hardware needed) | ✅ | ✅ |
+| Hardware self-test with a report for GitHub issues, verify-after-write | ✅ | ✅ |
+| Hotplug: connects when the keyboard is plugged in, remembers the last one | ✅ | |
 
 Not implemented on purpose: firmware updates, TH80 X screen uploads, and music/screen
 "follow" effects (those need the PC to stream data).
@@ -99,14 +101,25 @@ first so both programs don't talk to the keyboard at the same time.
 
 ### GUI
 
-Run `epomaker-panel`, pick your keyboard (or a **demo keyboard**) and click *Connect*.
-The tabs are Lighting, Key mapping, Per-key colors, Macros, Settings and Backup. The
-interface is in English or Spanish.
+Run `epomaker-panel`. It connects on its own when a supported keyboard is plugged in (the
+last one used is preferred and remembered across restarts) and shows *Keyboard
+disconnected* when it is unplugged. You can also pick a keyboard (or a **demo keyboard**)
+and click *Connect*. The tabs are Lighting, Key mapping, Per-key colors, Macros, Settings,
+Backup and Diagnostics. The interface is in English or Spanish.
+
+The **Diagnostics** tab runs the hardware self-test (see below) step by step and has a
+*Copy report* button that puts a Markdown report on the clipboard, ready to paste into a
+GitHub issue: app version, model and raw device id, firmware, USB ids and interface, the
+result of every step and the raw `probe` output. The same tab holds the **Verify every
+write** switch (on by default): every change made in the app is read back from the
+keyboard and a mismatch is shown as an error. Without a keyboard, the tab runs the
+read-only probe instead, for keyboards that are not detected.
 
 ### CLI
 
 ```bash
 epomaker probe                                   # read-only diagnostics (start here)
+epomaker selftest --yes                          # reversible self-test, prints a report
 epomaker info
 epomaker light modes
 epomaker light set wave --option left --speed 3 --color ff0080
@@ -120,8 +133,9 @@ epomaker backup my-th80.json
 epomaker --demo info                             # anything works on the emulator too
 ```
 
-Use `epomaker keymap actions` to list key, mouse and function names, and `--trace` to
-print every report sent to the keyboard.
+Use `epomaker keymap actions` to list key, mouse and function names, `--trace` to
+print every report sent to the keyboard and `--verify` to read every write back (the
+command fails if the keyboard did not store the value).
 
 ## Project layout
 
@@ -150,8 +164,18 @@ git-ignored.
 If you own one of the keyboards above (or another EPOMAKER YC500 keyboard), please help:
 
 1. `epomaker probe` and share the output.
-2. `epomaker info`, then try a lighting change (`epomaker light set breath --color 00ff00`).
-3. Back up before remapping keys: `epomaker backup before.json`.
+2. `epomaker selftest --yes` (or *Run self-test* in the GUI's Diagnostics tab) and paste
+   the report into a GitHub issue.
+3. `epomaker info`, then try a lighting change (`epomaker light set breath --color 00ff00 --verify`).
+4. Back up before remapping keys: `epomaker backup before.json`.
+
+The self-test only reads, except for three small writes that are undone right away: the
+backlight brightness is lowered by one step and the original effect written back, a rarely
+used key (Pause, Scroll Lock, right Ctrl…) on **profile 3** is remapped to F13 and restored,
+and an unused macro slot (preferably empty, never one bound to a key) is written, read back
+and emptied. Every write is verified, and each step restores the original state even when
+it fails; a restore that does not stick is reported as *not restored*, with the original
+value, so it can be fixed by hand.
 
 ## License
 

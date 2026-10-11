@@ -3,7 +3,8 @@
 use crate::editors::{self, ActionEditor, Recorder};
 use crate::i18n::{tr, Lang};
 use crate::keyboard_view::{self, KeyStyle};
-use crate::worker::{snapshot, Snapshot, Update, Worker};
+use crate::persist::{self, Saved, SavedDevice};
+use crate::worker::{snapshot, Hotplug, Snapshot, Update, Worker};
 use eframe::egui::{self, Color32, ComboBox, RichText, Slider};
 use epomaker_core::devices::Database;
 use epomaker_core::hid::{self, HidCandidate, HidTransport};
@@ -11,9 +12,13 @@ use epomaker_core::keymap::{KeyAction, KeyMatrix, Layer};
 use epomaker_core::lighting::{LightEffect, LightMode, Rgb};
 use epomaker_core::macros::{Macro, MacroEvent};
 use epomaker_core::profile_file::Backup;
+use epomaker_core::selftest::{self, DeviceSummary, Outcome, Step, StepResult};
 use epomaker_core::settings::{ReportRate, SleepTimes};
 use epomaker_core::Keyboard;
 use std::collections::BTreeMap;
+use std::time::Duration;
+
+const APP: &str = concat!("epomaker-panel ", env!("CARGO_PKG_VERSION"));
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -23,10 +28,12 @@ enum Tab {
     Macros,
     Settings,
     Backup,
+    Diagnostics,
 }
 
 impl Tab {
-    const ALL: [Tab; 6] = [Tab::Lighting, Tab::Keymap, Tab::Colors, Tab::Macros, Tab::Settings, Tab::Backup];
+    const ALL: [Tab; 7] =
+        [Tab::Lighting, Tab::Keymap, Tab::Colors, Tab::Macros, Tab::Settings, Tab::Backup, Tab::Diagnostics];
     fn label(self) -> &'static str {
         match self {
             Tab::Lighting => "Lighting",
@@ -35,6 +42,7 @@ impl Tab {
             Tab::Macros => "Macros",
             Tab::Settings => "Settings",
             Tab::Backup => "Backup",
+            Tab::Diagnostics => "Diagnostics",
         }
     }
 }
@@ -44,6 +52,22 @@ impl Tab {
 enum Target {
     Hid(HidCandidate),
     Demo(i64),
+}
+
+impl Target {
+    fn saved(&self) -> SavedDevice {
+        match self {
+            Target::Hid(c) => SavedDevice::from_candidate(c),
+            Target::Demo(id) => SavedDevice::Demo(*id),
+        }
+    }
+}
+
+/// Progress of a self-test started from the Diagnostics tab (one worker job per step).
+struct SelfTestRun {
+    device: Option<DeviceSummary>,
+    results: Vec<StepResult>,
+    running: bool,
 }
 
 /// Keyboard state as last read/written.
@@ -80,6 +104,19 @@ pub struct App {
     // settings
     confirm_reset: bool,
     backup_path: String,
+    // diagnostics
+    verify: bool,
+    selftest: Option<SelfTestRun>,
+    probe: Option<Vec<String>>,
+    // hotplug
+    hotplug: Option<Hotplug>,
+    saved: Saved,
+    /// Target of the connection in progress.
+    connecting: Option<Target>,
+    /// Target of the open connection.
+    connected: Option<Target>,
+    /// The connected keyboard disappeared from USB.
+    unplugged: bool,
     #[cfg(feature = "autoshot")]
     autoshot: Option<AutoShot>,
 }
@@ -96,6 +133,12 @@ struct AutoShot {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> App {
         let worker = Worker::new(cc.egui_ctx.clone());
+        #[cfg(feature = "autoshot")]
+        let screenshots = std::env::var_os("EPOMAKER_AUTOSHOT").is_some();
+        #[cfg(not(feature = "autoshot"))]
+        let screenshots = false;
+        // screenshots must not depend on (or change) the user's saved state
+        let saved = if screenshots { Saved::default() } else { persist::load() };
         let mut app = App {
             lang: Lang::detect(),
             worker,
@@ -119,6 +162,14 @@ impl App {
             recorder: None,
             confirm_reset: false,
             backup_path: default_backup_path(),
+            verify: saved.verify.unwrap_or(true),
+            selftest: None,
+            probe: None,
+            hotplug: None,
+            saved,
+            connecting: None,
+            connected: None,
+            unplugged: false,
             #[cfg(feature = "autoshot")]
             autoshot: std::env::var_os("EPOMAKER_AUTOSHOT").map(|d| AutoShot {
                 dir: d.into(),
@@ -134,11 +185,13 @@ impl App {
             return app;
         }
         app.refresh_devices();
-        if let Some(t) = app.target.clone() {
-            if matches!(t, Target::Hid(_)) {
-                app.connect(t);
+        if app.connecting.is_none() {
+            if let Some(SavedDevice::Demo(id)) = app.saved.last_device {
+                app.target = Some(Target::Demo(id));
+                app.connect(Target::Demo(id));
             }
         }
+        app.hotplug = Some(Hotplug::start(cc.egui_ctx.clone(), Duration::from_secs(2)));
         app
     }
 
@@ -148,13 +201,49 @@ impl App {
 
     fn refresh_devices(&mut self) {
         match hid::enumerate() {
-            Ok(c) => {
-                self.candidates = c;
-                if self.target.is_none() {
-                    self.target = self.candidates.first().cloned().map(Target::Hid);
-                }
-            }
+            Ok(c) => self.devices_changed(c),
             Err(e) => self.error = Some(e.to_string()),
+        }
+    }
+
+    /// Handles a new USB device list (startup, refresh button, hotplug thread):
+    /// notices when the open keyboard is gone and connects to one that just appeared.
+    fn devices_changed(&mut self, list: Vec<HidCandidate>) {
+        let appeared: Vec<HidCandidate> =
+            list.iter().filter(|c| !self.candidates.iter().any(|o| o.path == c.path)).cloned().collect();
+        self.candidates = list;
+        let present = |t: &Option<Target>, list: &[HidCandidate]| match t {
+            Some(Target::Hid(c)) => list.iter().any(|x| x.path == c.path),
+            _ => true,
+        };
+        if !present(&self.connected, &self.candidates) {
+            self.connected = None;
+            self.dev = None;
+            self.unplugged = true;
+            self.error = None;
+            self.status = self.t("Keyboard disconnected").to_string();
+            self.worker.run_raw(
+                "unplug",
+                Box::new(|k: &mut Option<Keyboard>| {
+                    *k = None;
+                    Ok(Update::None)
+                }),
+            );
+        }
+        if !present(&self.target, &self.candidates) {
+            self.target = None;
+        }
+        let real = |t: &Option<Target>| matches!(t, Some(Target::Hid(_)));
+        if !real(&self.connected) && !real(&self.connecting) && !appeared.is_empty() {
+            // prefer the keyboard used last time
+            let saved = self.saved.last_device.clone();
+            let pick = appeared.iter().find(|c| saved.as_ref().is_some_and(|s| s.matches(c))).unwrap_or(&appeared[0]);
+            let t = Target::Hid(pick.clone());
+            self.target = Some(t.clone());
+            self.connect(t);
+        }
+        if self.target.is_none() {
+            self.target = self.candidates.first().cloned().map(Target::Hid);
         }
     }
 
@@ -163,6 +252,9 @@ impl App {
         self.selected = None;
         self.editor = None;
         self.macros.clear();
+        self.selftest = None;
+        self.connecting = Some(target.clone());
+        let verify = self.verify;
         self.worker.run_raw(
             "connect",
             Box::new(move |slot: &mut Option<Keyboard>| {
@@ -175,6 +267,7 @@ impl App {
                         Keyboard::connect(Box::new(HidTransport::open(&c)?), dongle)?
                     }
                 };
+                kb.set_verify(verify);
                 let snap = snapshot(&mut kb)?;
                 *slot = Some(kb);
                 Ok(Update::Connected(Box::new(snap)))
@@ -192,8 +285,18 @@ impl App {
                 self.status = format!("{} — {}{demo}", s.info.display_name, s.describe);
                 let layers = s.layers.iter().cloned().collect();
                 self.dev = Some(DeviceState { snap: *s, layers });
+                self.unplugged = false;
+                // a connection made by connect() (factory reset and restore also send Connected)
+                if let Some(t) = self.connecting.take() {
+                    self.saved.last_device = Some(t.saved());
+                    self.connected = Some(t);
+                    self.save();
+                }
             }
-            Update::Disconnected => self.dev = None,
+            Update::Disconnected => {
+                self.dev = None;
+                self.connected = None;
+            }
             Update::Light(l) => {
                 if let Some(l) = l {
                     self.light = l;
@@ -235,6 +338,18 @@ impl App {
                 }
             }
             Update::Message(m) => self.status = m,
+            Update::SelfTestDevice(d) => {
+                if let Some(st) = &mut self.selftest {
+                    st.device = Some(*d);
+                }
+            }
+            Update::SelfTestStep(r) => {
+                if let Some(st) = &mut self.selftest {
+                    st.results.push(*r);
+                    st.running = st.results.len() < Step::ALL.len();
+                }
+            }
+            Update::Probe(lines) => self.probe = Some(lines),
             Update::Many(v) => v.into_iter().for_each(|u| self.apply(u)),
         }
     }
@@ -293,6 +408,7 @@ impl App {
                 }
             }
             if self.dev.is_some() && ui.add_enabled(!busy, egui::Button::new(self.t("Disconnect"))).clicked() {
+                self.connected = None;
                 self.worker.run_raw(
                     "disconnect",
                     Box::new(|k: &mut Option<Keyboard>| {
@@ -892,6 +1008,173 @@ impl App {
     }
 }
 
+impl App {
+    fn save(&mut self) {
+        #[cfg(feature = "autoshot")]
+        if self.autoshot.is_some() {
+            return;
+        }
+        self.saved.verify = Some(self.verify);
+        persist::save(&self.saved);
+    }
+
+    // ------------------------------------------------------------ diagnostics
+
+    fn start_selftest(&mut self) {
+        self.selftest = Some(SelfTestRun { device: None, results: vec![], running: true });
+        self.worker.run("self-test", |kb| Ok(Update::SelfTestDevice(Box::new(selftest::summary(kb)))));
+        for step in Step::ALL {
+            self.worker.run("self-test", move |kb| Ok(Update::SelfTestStep(Box::new(selftest::run_step(kb, step)))));
+        }
+    }
+
+    fn run_probe(&self) {
+        self.worker.run_raw(
+            "probe",
+            Box::new(|_: &mut Option<Keyboard>| {
+                let mut lines = Vec::new();
+                epomaker_core::probe::run(|l| lines.push(l))?;
+                Ok(Update::Probe(lines))
+            }),
+        );
+    }
+
+    fn report(&self) -> Option<String> {
+        let st = self.selftest.as_ref()?;
+        Some(selftest::markdown(st.device.as_ref()?, &st.results, APP))
+    }
+
+    fn diagnostics_tab(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
+        let t = |s| tr(lang, s);
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            if self.dev.is_none() {
+                self.probe_panel(ui);
+                return;
+            }
+            ui.heading(t("Hardware self-test"));
+            ui.label(t(SELFTEST_INTRO));
+            ui.add_space(6.0);
+            if ui.checkbox(&mut self.verify, t("Verify every write (read it back)")).changed() {
+                let v = self.verify;
+                self.worker.run("verify", move |kb| {
+                    kb.set_verify(v);
+                    Ok(Update::None)
+                });
+                self.save();
+            }
+            ui.label(RichText::new(t(VERIFY_HINT)).small().weak());
+            ui.add_space(8.0);
+            let running = self.selftest.as_ref().is_some_and(|s| s.running);
+            let report = self.report();
+            ui.horizontal(|ui| {
+                if ui.add_enabled(!running && !self.worker.busy(), egui::Button::new(t("Run self-test"))).clicked() {
+                    self.start_selftest();
+                }
+                if ui.add_enabled(!running && report.is_some(), egui::Button::new(t("Copy report"))).clicked() {
+                    if let Some(md) = report.clone() {
+                        ui.ctx().copy_text(md);
+                        self.status = t("Report copied to the clipboard").to_string();
+                    }
+                }
+            });
+            let Some(st) = &self.selftest else { return };
+            ui.add_space(8.0);
+            for (i, step) in Step::ALL.iter().enumerate() {
+                ui.separator();
+                ui.horizontal(|ui| {
+                    let r = st.results.get(i);
+                    let (text, color) = match r.map(|r| r.outcome) {
+                        Some(Outcome::Passed) => (t("passed"), Color32::from_rgb(90, 190, 90)),
+                        Some(Outcome::Failed) => (t("FAILED"), Color32::LIGHT_RED),
+                        Some(Outcome::Skipped) => (t("skipped"), Color32::GRAY),
+                        None if st.running && i == st.results.len() => (t("running…"), ui.visuals().text_color()),
+                        None => (t("pending"), ui.visuals().weak_text_color()),
+                    };
+                    ui.add_sized([90.0, 18.0], egui::Label::new(RichText::new(text).color(color).strong()));
+                    ui.label(RichText::new(t(step.title())).strong());
+                    match r.and_then(|r| r.restored) {
+                        Some(true) => {
+                            ui.label(RichText::new(format!("({})", t("restored"))).weak());
+                        }
+                        Some(false) => {
+                            ui.colored_label(Color32::LIGHT_RED, format!("({})", t("NOT restored")));
+                        }
+                        None => {}
+                    }
+                    if r.is_none() && st.running && i == st.results.len() {
+                        ui.spinner();
+                    }
+                });
+                if let Some(r) = st.results.get(i) {
+                    ui.indent(i, |ui| {
+                        for d in &r.details {
+                            ui.add(egui::Label::new(RichText::new(d).small()).wrap());
+                        }
+                        if let Some(e) = &r.error {
+                            ui.add(egui::Label::new(RichText::new(e).small().color(color_for(r.outcome))).wrap());
+                        }
+                    });
+                }
+            }
+            ui.separator();
+            if let Some(md) = report {
+                egui::CollapsingHeader::new(t("Report preview")).show(ui, |ui| {
+                    ui.add(egui::TextEdit::multiline(&mut md.as_str()).code_editor().desired_width(f32::INFINITY));
+                });
+            }
+        });
+    }
+
+    /// Without a keyboard: the read-only USB probe, for keyboards that are not detected.
+    fn probe_panel(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
+        let t = |s| tr(lang, s);
+        ui.heading(t("Read-only probe"));
+        ui.label(t(PROBE_INTRO));
+        ui.add_space(8.0);
+        let output = self.probe.as_ref().map(|lines| {
+            format!(
+                "{APP} ({} {})\n\n```text\n{}\n```\n",
+                std::env::consts::OS,
+                std::env::consts::ARCH,
+                lines.join("\n")
+            )
+        });
+        ui.horizontal(|ui| {
+            if ui.add_enabled(!self.worker.busy(), egui::Button::new(t("Run probe"))).clicked() {
+                self.run_probe();
+            }
+            if ui.add_enabled(output.is_some(), egui::Button::new(t("Copy output"))).clicked() {
+                if let Some(o) = output.clone() {
+                    ui.ctx().copy_text(o);
+                    self.status = t("Output copied to the clipboard").to_string();
+                }
+            }
+        });
+        if let Some(lines) = &self.probe {
+            ui.add_space(8.0);
+            let text = lines.join("\n");
+            ui.add(egui::TextEdit::multiline(&mut text.as_str()).code_editor().desired_width(f32::INFINITY));
+        }
+    }
+}
+
+const SELFTEST_INTRO: &str = "Checks that this app understands your keyboard. It only reads, except for three small \
+changes that are undone right away: the backlight brightness, one rarely used key on profile 3 and an unused macro \
+slot. The original state is restored even if a step fails. Then copy the report into a GitHub issue.";
+const VERIFY_HINT: &str =
+    "Every change made in this app is read back from the keyboard; a mismatch is shown as an error.";
+const PROBE_INTRO: &str = "No supported keyboard is connected. The probe lists the USB interfaces of EPOMAKER \
+keyboards and sends only read commands. Share its output in a GitHub issue if your keyboard is not detected.";
+
+fn color_for(o: Outcome) -> Color32 {
+    match o {
+        Outcome::Failed => Color32::LIGHT_RED,
+        _ => Color32::GRAY,
+    }
+}
+
 fn minutes(ui: &mut egui::Ui, label: &str, secs: &mut u16, min: u16, max: u16, allow_never: bool, lang: Lang) -> bool {
     ui.label(label);
     let mut changed = false;
@@ -935,7 +1218,9 @@ impl App {
     fn autoshot(&mut self, ctx: &egui::Context) {
         let Some(mut shot) = self.autoshot.take() else { return };
         ctx.request_repaint();
-        if self.dev.is_none() || self.worker.busy() {
+        // one shot per tab, then the Diagnostics tab once more without a keyboard
+        let unplugged_step = shot.step == Tab::ALL.len();
+        if (self.dev.is_none() && !unplugged_step) || self.worker.busy() {
             self.autoshot = Some(shot);
             return;
         }
@@ -958,11 +1243,33 @@ impl App {
             shot.waiting = false;
             shot.frames = 0;
         }
-        if shot.step >= Tab::ALL.len() {
+        if shot.step > Tab::ALL.len() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         }
-        self.tab = Tab::ALL[shot.step];
+        if shot.step == Tab::ALL.len() {
+            if self.dev.is_some() {
+                // what an unplugged keyboard looks like, with the read-only probe
+                self.dev = None;
+                self.connected = None;
+                self.unplugged = true;
+                self.status = self.t("Keyboard disconnected").to_string();
+                self.worker.run_raw(
+                    "unplug",
+                    Box::new(|k: &mut Option<Keyboard>| {
+                        *k = None;
+                        Ok(Update::None)
+                    }),
+                );
+                self.run_probe();
+            }
+            self.tab = Tab::Diagnostics;
+        } else {
+            self.tab = Tab::ALL[shot.step];
+        }
+        if self.tab == Tab::Diagnostics && self.dev.is_some() && self.selftest.is_none() {
+            self.start_selftest();
+        }
         if self.tab == Tab::Keymap && self.selected.is_none() {
             if let Some(d) = &self.dev {
                 // show a remapped key and its editor
@@ -1019,13 +1326,30 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         #[cfg(feature = "autoshot")]
         self.autoshot(&ui.ctx().clone());
+        if let Some(list) = self.hotplug.as_ref().and_then(|h| h.poll()) {
+            match list {
+                Ok(list) => self.devices_changed(list),
+                Err(e) => log::warn!("USB scan: {e}"),
+            }
+        }
         for (label, r) in self.worker.poll() {
             match r {
                 Ok(u) => {
                     self.error = None;
                     self.apply(u);
                 }
-                Err(e) => self.error = Some(format!("{label}: {e}")),
+                Err(e) => {
+                    match label.as_str() {
+                        "connect" => self.connecting = None,
+                        "self-test" => {
+                            if let Some(st) = &mut self.selftest {
+                                st.running = false;
+                            }
+                        }
+                        _ => {}
+                    }
+                    self.error = Some(format!("{label}: {e}"));
+                }
             }
         }
         egui::Panel::top("top").show(ui, |ui| {
@@ -1053,16 +1377,26 @@ impl eframe::App for App {
             ui.add_space(8.0);
             for tab in Tab::ALL {
                 let text = RichText::new(self.t(tab.label())).size(15.0);
-                if ui.add_enabled(self.dev.is_some(), egui::Button::selectable(self.tab == tab, text)).clicked() {
+                let enabled = self.dev.is_some() || tab == Tab::Diagnostics;
+                if ui.add_enabled(enabled, egui::Button::selectable(self.tab == tab, text)).clicked() {
                     self.tab = tab;
                 }
             }
         });
         egui::CentralPanel::default().show(ui, |ui| {
-            if self.dev.is_none() {
+            if self.dev.is_none() && self.tab != Tab::Diagnostics {
                 ui.centered_and_justified(|ui| {
                     if self.worker.busy() {
                         ui.spinner();
+                    } else if self.unplugged {
+                        ui.label(
+                            RichText::new(format!(
+                                "{}\n\n{}",
+                                self.t("Keyboard disconnected"),
+                                self.t("It will reconnect automatically when plugged in again.")
+                            ))
+                            .size(18.0),
+                        );
                     } else {
                         ui.label(RichText::new(self.t("No keyboard connected")).size(18.0));
                     }
@@ -1076,7 +1410,22 @@ impl eframe::App for App {
                 Tab::Macros => self.macros_tab(ui),
                 Tab::Settings => self.settings_tab(ui),
                 Tab::Backup => self.backup_tab(ui),
+                Tab::Diagnostics => self.diagnostics_tab(ui),
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn diagnostics_strings_are_translated() {
+        let mut strings = vec![SELFTEST_INTRO, VERIFY_HINT, PROBE_INTRO, Tab::Diagnostics.label()];
+        strings.extend(Step::ALL.iter().map(|s| s.title()));
+        for s in strings {
+            assert_ne!(tr(Lang::Es, s), s, "missing Spanish for {s:?}");
+        }
     }
 }

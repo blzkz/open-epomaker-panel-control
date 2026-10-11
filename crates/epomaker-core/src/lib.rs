@@ -20,8 +20,10 @@ pub mod keycodes;
 pub mod keymap;
 pub mod lighting;
 pub mod macros;
+pub mod probe;
 pub mod profile_file;
 pub mod protocol;
+pub mod selftest;
 pub mod settings;
 pub mod transport;
 
@@ -39,6 +41,9 @@ pub enum Error {
     InvalidArgument(String),
     #[error("protocol error: {0}")]
     Protocol(String),
+    /// Verify-after-write: the value read back differs from the one written.
+    #[error("read-back mismatch for {what}: wrote {expected}, keyboard reports {got}")]
+    VerifyMismatch { what: String, expected: String, got: String },
     #[error(transparent)]
     Macro(#[from] macros::MacroError),
     #[error("I/O error: {0}")]

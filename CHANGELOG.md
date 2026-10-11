@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Hardware self-test: `epomaker selftest --yes` and the GUI's new Diagnostics tab run
+  read-only checks plus three writes that are undone right away (brightness, one key on
+  profile 3, an unused macro slot) and produce a Markdown report for GitHub issues.
+- Verify-after-write: `Keyboard::set_verify` / `epomaker --verify` read every write back
+  and fail with a mismatch error; on by default in the GUI.
+- The GUI connects when a keyboard is plugged in, shows when it is unplugged and
+  remembers the last keyboard across restarts.
+- The firmware emulator can inject faults (dropped or corrupted writes, corrupted
+  answers, I/O errors) for tests.
+
 ## 0.2.0 — 2026-10-11
 
 - New models: EPOMAKER TH96, TH68, TH-21 (numpad) and EP84, wired and 2.4 GHz dongle, each

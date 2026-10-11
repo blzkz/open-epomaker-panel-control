@@ -2,14 +2,17 @@
 //! needs pauses between reports), so the UI never talks to the device directly.
 
 use epomaker_core::devices::{DeviceInfo, ModelInfo};
+use epomaker_core::hid::{self, HidCandidate};
 use epomaker_core::keymap::{KeyMatrix, Layer};
 use epomaker_core::lighting::{LightEffect, Rgb};
 use epomaker_core::macros::Macro;
+use epomaker_core::selftest::{DeviceSummary, StepResult};
 use epomaker_core::settings::{Battery, KeyboardOptions, ReportRate, SleepTimes, PROFILES};
 use epomaker_core::{Error, Keyboard};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
+use std::time::Duration;
 
 pub type Job = Box<dyn FnOnce(&mut Option<Keyboard>) -> Result<Update, Error> + Send>;
 
@@ -45,6 +48,11 @@ pub enum Update {
     Macro(u8, Macro),
     Battery(Battery),
     Message(String),
+    /// Device information for the self-test report.
+    SelfTestDevice(Box<DeviceSummary>),
+    SelfTestStep(Box<StepResult>),
+    /// Output of the read-only probe (no keyboard connected).
+    Probe(Vec<String>),
     Many(Vec<Update>),
 }
 
@@ -143,4 +151,38 @@ pub fn snapshot(kb: &mut Keyboard) -> Result<Snapshot, Error> {
         colors: kb.key_colors()?,
         used_slots,
     })
+}
+
+/// Background USB scan for hotplug: enumerates every `period` and reports changes.
+pub struct Hotplug {
+    rx: Receiver<Result<Vec<HidCandidate>, String>>,
+}
+
+impl Hotplug {
+    pub fn start(ctx: eframe::egui::Context, period: Duration) -> Hotplug {
+        let (tx, rx) = channel();
+        std::thread::Builder::new()
+            .name("hotplug".into())
+            .spawn(move || {
+                let mut last: Option<Result<Vec<HidCandidate>, String>> = None;
+                loop {
+                    let now = hid::enumerate().map_err(|e| e.to_string());
+                    if last.as_ref() != Some(&now) {
+                        if tx.send(now.clone()).is_err() {
+                            break;
+                        }
+                        ctx.request_repaint();
+                        last = Some(now);
+                    }
+                    std::thread::sleep(period);
+                }
+            })
+            .expect("spawn hotplug thread");
+        Hotplug { rx }
+    }
+
+    /// The latest device list, if it changed since the last call.
+    pub fn poll(&self) -> Option<Result<Vec<HidCandidate>, String>> {
+        self.rx.try_iter().last()
+    }
 }

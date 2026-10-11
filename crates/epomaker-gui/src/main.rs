@@ -6,6 +6,7 @@ mod editors;
 mod hidmap;
 mod i18n;
 mod keyboard_view;
+mod persist;
 mod worker;
 
 fn main() -> eframe::Result {
