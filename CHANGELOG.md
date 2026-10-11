@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 — 2026-10-11
 
 - New models: EPOMAKER TH96, TH68, TH-21 (numpad) and EP84, wired and 2.4 GHz dongle, each
   verified against byte vectors recorded from the official software.

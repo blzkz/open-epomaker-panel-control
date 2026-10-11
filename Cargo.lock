@@ -1123,7 +1123,7 @@ checksum = "773fa9c96dd0dbef887e39d0ed6177f141cce4d68e6041df77570aa3702dfa13"
 
 [[package]]
 name = "epomaker-cli"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "clap",
  "env_logger",
@@ -1134,7 +1134,7 @@ dependencies = [
 
 [[package]]
 name = "epomaker-core"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "hidapi",
  "log",
@@ -1145,7 +1145,7 @@ dependencies = [
 
 [[package]]
 name = "epomaker-gui"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "eframe",
  "env_logger",
