@@ -40,7 +40,9 @@ fn lighting_roundtrip_every_mode() {
             kb.set_light(&e).unwrap();
             let back = kb.light().unwrap().unwrap();
             assert_eq!(back.mode, e.mode);
-            assert_eq!(back.brightness, e.brightness, "{:?}", e.mode);
+            // the screen-color effect always runs at full brightness (as in the vendor app)
+            let brightness = if e.mode == LightMode::ScreenColor { 4 } else { e.brightness };
+            assert_eq!(back.brightness, brightness, "{:?}", e.mode);
             if caps.mode.uses_speed() {
                 assert_eq!(back.speed, 3, "{:?}", e.mode);
             }
@@ -182,4 +184,17 @@ fn factory_reset() {
     kb.set_key(Layer::Profile(0), 9, KeyAction::Disabled).unwrap();
     kb.factory_reset().unwrap();
     assert_eq!(kb.read_layer(Layer::Profile(0)).unwrap().to_bytes(), kb.model.default_matrix);
+}
+
+#[test]
+fn host_streamed_effects() {
+    let (mut kb, emu) = kb();
+    kb.set_light(&LightEffect { mode: LightMode::MusicFollow3, ..Default::default() }).unwrap();
+    let levels: Vec<u8> = (0..32).map(|i| (i % 7) as u8).collect();
+    kb.send_music_levels(&levels).unwrap();
+    kb.send_screen_color(Rgb(0x123456)).unwrap();
+    let s = emu.state.lock().unwrap();
+    assert_eq!(s.music_levels.to_vec(), levels);
+    assert_eq!(s.screen_color, [0x12, 0x34, 0x56]);
+    assert_eq!(s.checksum_errors, 0);
 }

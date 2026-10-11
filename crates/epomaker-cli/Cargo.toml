@@ -12,6 +12,9 @@ path = "src/main.rs"
 
 [dependencies]
 epomaker-core = { workspace = true }
+epomaker-host = { workspace = true }
+ctrlc = "3.5"
+clap_complete = "4.5"
 clap = { workspace = true }
 env_logger = { workspace = true }
 log = { workspace = true }

@@ -47,4 +47,7 @@ package() {
   install -Dm644 packaging/icons/open-epomaker-panel.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/open-epomaker-panel.png"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  target/release/epomaker completions bash | install -Dm644 /dev/stdin "$pkgdir/usr/share/bash-completion/completions/epomaker"
+  target/release/epomaker completions zsh | install -Dm644 /dev/stdin "$pkgdir/usr/share/zsh/site-functions/_epomaker"
+  target/release/epomaker completions fish | install -Dm644 /dev/stdin "$pkgdir/usr/share/fish/vendor_completions.d/epomaker.fish"
 }

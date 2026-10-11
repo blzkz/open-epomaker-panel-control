@@ -31,6 +31,9 @@ pub struct EmulatorState {
     pub fn_matrices: Vec<Vec<u8>>,
     pub macros: Vec<[u8; 256]>,
     pub pics: Vec<Vec<u8>>,
+    /// Last frame of the host-streamed effects.
+    pub music_levels: [u8; 32],
+    pub screen_color: [u8; 3],
     /// Every report received, in order (with checksum).
     pub log: Vec<Report>,
     pub checksum_errors: usize,
@@ -53,6 +56,8 @@ impl EmulatorState {
             fn_matrices: vec![],
             macros: vec![],
             pics: vec![],
+            music_levels: [0; 32],
+            screen_color: [0; 3],
             log: vec![],
             checksum_errors: 0,
         };
@@ -147,6 +152,8 @@ impl Emulator {
             cmd::SET_SLEEP_TIME => s.sleep.copy_from_slice(&r[8..16]),
             cmd::GET_SLEEP_TIME => resp[1..9].copy_from_slice(&s.sleep.clone()),
             cmd::SET_AUTO_OS => s.auto_os = r[1] != 0,
+            crate::live::SET_AUDIO => s.music_levels.copy_from_slice(&r[8..40]),
+            crate::live::SET_SCREEN_COLOR => s.screen_color.copy_from_slice(&r[1..4]),
             cmd::GET_AUTO_OS => resp[1] = u8::from(s.auto_os),
             cmd::SET_KEY_SIMPLE | cmd::SET_FN_SIMPLE => {
                 let idx = r[2] as usize * 4;

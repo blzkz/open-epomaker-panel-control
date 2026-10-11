@@ -47,6 +47,7 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           mkdir -p dist
+          packaging/linux/completions.sh
           cargo deb -p epomaker-gui --no-build -o dist/
           cargo generate-rpm -p crates/epomaker-gui -o dist/
           packaging/linux/build-appimage.sh dist

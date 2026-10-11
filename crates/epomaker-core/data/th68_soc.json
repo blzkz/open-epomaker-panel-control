@@ -30,7 +30,6 @@
  ],
  "models": {
   "yc500_th68_soc": {
-   "class": "YC500_TH68_SOC",
    "matrix": [
     0,
     0,
@@ -736,6 +735,33 @@
      ],
      "maxValue": 4,
      "minValue": 0
+    },
+    {
+     "type": "LightMusicFollow3",
+     "options": [
+      "upright",
+      "separate",
+      "intersect"
+     ],
+     "maxValue": 4,
+     "minValue": 0,
+     "rgb": true,
+     "dazzle": true
+    },
+    {
+     "type": "LightMusicFollow2",
+     "options": [
+      "upright",
+      "separate",
+      "intersect"
+     ],
+     "maxValue": 4,
+     "minValue": 0,
+     "rgb": true,
+     "dazzle": true
+    },
+    {
+     "type": "LightScreenColor"
     }
    ],
    "report_rates": [
@@ -1560,6 +1586,5 @@
    0,
    0
   ]
- },
- "hid_names": {}
+ }
 }

@@ -26,6 +26,9 @@ struct Cli {
     /// Print every report sent/received.
     #[arg(long, global = true)]
     trace: bool,
+    /// Machine-readable JSON output for commands that print information.
+    #[arg(long, global = true)]
+    json: bool,
     #[command(subcommand)]
     command: Cmd,
 }
@@ -39,6 +42,11 @@ enum Cmd {
     Probe,
     /// Show model, firmware and current settings.
     Info,
+    /// Host-driven effects that need the computer to stream data (until Ctrl+C).
+    Live {
+        #[command(subcommand)]
+        cmd: LiveCmd,
+    },
     /// Backlight effect.
     Light {
         #[command(subcommand)]
@@ -104,6 +112,8 @@ enum Cmd {
     Backup { file: String },
     /// Restore a configuration saved with `backup`.
     Restore { file: String },
+    /// Print a shell completion script (bash, zsh, fish, powershell, elvish).
+    Completions { shell: clap_complete::Shell },
     /// Factory reset (all profiles, keymaps, macros, lighting).
     FactoryReset {
         #[arg(long)]
@@ -132,6 +142,32 @@ enum LightCmd {
         /// Rainbow colors.
         #[arg(long)]
         dazzle: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum LiveCmd {
+    /// Lights react to the audio the computer is playing.
+    Music {
+        /// Vendor variant 1 or 2 of the effect.
+        #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=2))]
+        variant: u8,
+        /// upright | separate | intersect
+        #[arg(long, default_value = "upright")]
+        style: String,
+        #[arg(long, default_value_t = 4)]
+        brightness: u8,
+        /// Stop after this many seconds.
+        #[arg(long)]
+        seconds: Option<u64>,
+        /// Draw the bands in the terminal.
+        #[arg(long)]
+        meter: bool,
+    },
+    /// Lights follow the average color of the screen (Windows, Linux X11).
+    Screen {
+        #[arg(long)]
+        seconds: Option<u64>,
     },
 }
 
@@ -223,9 +259,30 @@ fn open(cli: &Cli) -> Result<Keyboard, Error> {
     Ok(kb)
 }
 
+static JSON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Prints `value` as JSON with `--json`, otherwise runs `text`.
+fn out(value: serde_json::Value, text: impl FnOnce()) {
+    if JSON.load(std::sync::atomic::Ordering::Relaxed) {
+        println!("{}", serde_json::to_string_pretty(&value).unwrap_or_default());
+    } else {
+        text();
+    }
+}
+
 fn run(cli: Cli) -> Result<(), Error> {
+    JSON.store(cli.json, std::sync::atomic::Ordering::Relaxed);
+    if let Cmd::Completions { shell } = cli.command {
+        use clap::CommandFactory;
+        clap_complete::generate(shell, &mut Cli::command(), "epomaker", &mut std::io::stdout());
+        return Ok(());
+    }
     if let Cmd::List = cli.command {
         let list = epomaker_core::hid::enumerate()?;
+        if cli.json {
+            out(serde_json::to_value(&list)?, || {});
+            return Ok(());
+        }
         if list.is_empty() {
             println!("No supported keyboard found.");
             #[cfg(target_os = "linux")]
@@ -244,12 +301,16 @@ fn run(cli: Cli) -> Result<(), Error> {
     }
     let mut kb = open(&cli)?;
     match cli.command {
-        Cmd::List | Cmd::Probe => unreachable!(),
+        Cmd::List | Cmd::Probe | Cmd::Completions { .. } => unreachable!(),
         Cmd::Info => info(&mut kb)?,
+        Cmd::Live { cmd } => live(&mut kb, cmd)?,
         Cmd::Light { cmd } => light(&mut kb, cmd)?,
         Cmd::Profile { profile } => match profile {
             Some(p) => kb.set_profile(p)?,
-            None => println!("{}", kb.profile()?),
+            None => {
+                let p = kb.profile()?;
+                out(serde_json::json!(p), || println!("{p}"));
+            }
         },
         Cmd::Rate { hz, profile } => match hz {
             Some(hz) => {
@@ -257,7 +318,10 @@ fn run(cli: Cli) -> Result<(), Error> {
                 kb.set_report_rate(profile, r)?
             }
             None => {
-                println!("{}", kb.report_rate(profile)?.map(|r| format!("{} Hz", r.hz())).unwrap_or("unknown".into()))
+                let r = kb.report_rate(profile)?;
+                out(serde_json::json!(r.map(|r| r.hz())), || {
+                    println!("{}", r.map(|r| format!("{} Hz", r.hz())).unwrap_or("unknown".into()))
+                })
             }
         },
         Cmd::Options { profile, win_lock, mac, wasd_swap, fn_swap, power_save } => {
@@ -281,11 +345,14 @@ fn run(cli: Cli) -> Result<(), Error> {
             if changed {
                 kb.set_options(profile, &o)?;
             }
-            println!("{o:#?}");
+            out(serde_json::to_value(o)?, || println!("{o:#?}"));
         }
         Cmd::Debounce { ms } => match ms {
             Some(ms) => kb.set_debounce(ms)?,
-            None => println!("{} ms", kb.debounce()?),
+            None => {
+                let d = kb.debounce()?;
+                out(serde_json::json!(d), || println!("{d} ms"));
+            }
         },
         Cmd::Sleep { bt_light, dongle_light, bt_deep, dongle_deep } => {
             let mut s: SleepTimes = kb.sleep_times()?;
@@ -297,7 +364,7 @@ fn run(cli: Cli) -> Result<(), Error> {
             if changed {
                 kb.set_sleep_times(&s)?;
             }
-            println!("{s:#?}");
+            out(serde_json::to_value(s)?, || println!("{s:#?}"));
         }
         Cmd::Keymap { cmd } => keymap(&mut kb, cmd)?,
         Cmd::Macro { cmd } => macros(&mut kb, cmd)?,
@@ -321,6 +388,62 @@ fn run(cli: Cli) -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+fn live(kb: &mut Keyboard, cmd: LiveCmd) -> Result<(), Error> {
+    use epomaker_host::stream::{self, Frame, LiveEffect};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    let (effect, base, seconds, meter) = match cmd {
+        LiveCmd::Music { variant, style, brightness, seconds, meter } => {
+            let mode = if variant == 2 { LightMode::MusicFollow2 } else { LightMode::MusicFollow3 };
+            let option =
+                mode.options().iter().position(|o| o.eq_ignore_ascii_case(&style)).ok_or_else(|| {
+                    Error::InvalidArgument(format!("style {style}; valid: {}", mode.options().join(", ")))
+                })? as u8;
+            let base = LightEffect { mode, brightness, option, dazzle: true, ..LightEffect::default() };
+            (LiveEffect::Music(mode), Some(base), seconds, meter)
+        }
+        LiveCmd::Screen { seconds } => (LiveEffect::Screen, None, seconds, false),
+    };
+    if kb.model.caps(effect.light_mode()).is_none() {
+        return Err(Error::InvalidArgument(format!(
+            "{} is not supported by this keyboard",
+            effect.light_mode().label()
+        )));
+    }
+    let previous = kb.light()?;
+    let stop = Arc::new(AtomicBool::new(false));
+    let s = stop.clone();
+    ctrlc::set_handler(move || s.store(true, Ordering::Relaxed))
+        .map_err(|e| Error::InvalidArgument(format!("cannot install Ctrl+C handler: {e}")))?;
+    if let Some(secs) = seconds {
+        let s = stop.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(secs));
+            s.store(true, Ordering::Relaxed);
+        });
+    }
+    eprintln!("Streaming {} — press Ctrl+C to stop", effect.light_mode().label());
+    let result = stream::run(kb, effect, &stop, base, |f| {
+        if meter {
+            if let Frame::Music(levels) = f {
+                let bars: String =
+                    levels.iter().map(|l| [' ', '.', ':', '-', '=', '+', '#'][(*l as usize).min(6)]).collect();
+                eprint!("\r[{bars}]");
+            }
+        }
+    });
+    if meter {
+        eprintln!();
+    }
+    if let Some(p) = previous {
+        kb.set_light(&p)?;
+    }
+    result.map_err(|e| match e {
+        epomaker_host::HostError::Keyboard(k) => k,
+        other => Error::InvalidArgument(other.to_string()),
+    })
 }
 
 fn probe() -> Result<(), Error> {
@@ -379,18 +502,31 @@ fn probe() -> Result<(), Error> {
 }
 
 fn info(kb: &mut Keyboard) -> Result<(), Error> {
-    println!("Model:     {} ({}, id {})", kb.info.display_name, kb.info.name, kb.info.id);
-    println!("Device:    {}", kb.describe());
-    println!("Firmware:  {:#06x}", kb.firmware_version()?);
+    let firmware = kb.firmware_version()?;
     let b = kb.battery()?;
-    println!("Battery:   {}% ({:?})", b.percent, b.state);
     let p = kb.profile()?;
-    println!("Profile:   {p}");
-    println!("Light:     {}", kb.light()?.map(|e| describe_effect(&e)).unwrap_or("unknown".into()));
-    println!("Rate:      {}", kb.report_rate(p)?.map(|r| format!("{} Hz", r.hz())).unwrap_or("unknown".into()));
-    println!("Debounce:  {} ms", kb.debounce()?);
-    println!("Options:   {:?}", kb.options(p)?);
-    println!("Sleep:     {:?}", kb.sleep_times()?);
+    let light = kb.light()?;
+    let rate = kb.report_rate(p)?;
+    let debounce = kb.debounce()?;
+    let options = kb.options(p)?;
+    let sleep = kb.sleep_times()?;
+    let value = serde_json::json!({
+        "model": kb.info.display_name, "name": kb.info.name, "id": kb.info.id, "device": kb.describe(),
+        "firmware": firmware, "battery": b, "profile": p, "light": light, "report_rate": rate.map(|r| r.hz()),
+        "debounce_ms": debounce, "options": options, "sleep": sleep,
+    });
+    out(value, || {
+        println!("Model:     {} ({}, id {})", kb.info.display_name, kb.info.name, kb.info.id);
+        println!("Device:    {}", kb.describe());
+        println!("Firmware:  {firmware:#06x}");
+        println!("Battery:   {}% ({:?})", b.percent, b.state);
+        println!("Profile:   {p}");
+        println!("Light:     {}", light.map(|e| describe_effect(&e)).unwrap_or("unknown".into()));
+        println!("Rate:      {}", rate.map(|r| format!("{} Hz", r.hz())).unwrap_or("unknown".into()));
+        println!("Debounce:  {debounce} ms");
+        println!("Options:   {options:?}");
+        println!("Sleep:     {sleep:?}");
+    });
     Ok(())
 }
 
@@ -418,7 +554,15 @@ fn parse_color(s: &str) -> Result<Rgb, Error> {
 
 fn light(kb: &mut Keyboard, cmd: LightCmd) -> Result<(), Error> {
     match cmd {
-        LightCmd::Get => println!("{}", kb.light()?.map(|e| describe_effect(&e)).unwrap_or("unknown".into())),
+        LightCmd::Get => {
+            let l = kb.light()?;
+            out(serde_json::to_value(l)?, || {
+                println!("{}", l.map(|e| describe_effect(&e)).unwrap_or("unknown".into()))
+            });
+        }
+        LightCmd::Modes if JSON.load(std::sync::atomic::Ordering::Relaxed) => {
+            out(serde_json::to_value(&kb.model.light_modes)?, || {});
+        }
         LightCmd::Modes => {
             for c in &kb.model.light_modes {
                 println!(
@@ -560,6 +704,24 @@ fn keymap(kb: &mut Keyboard, cmd: KeymapCmd) -> Result<(), Error> {
     match cmd {
         KeymapCmd::Show { layer, all } => {
             let l = kb.read_layer(parse_layer(&layer)?)?;
+            if JSON.load(std::sync::atomic::Ordering::Relaxed) {
+                let rows: Vec<serde_json::Value> = l
+                    .entries
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| kb.model.default_entry(*i).is_some_and(|d| d != [0; 4]))
+                    .map(|(i, e)| {
+                        let def = kb.model.default_entry(i).unwrap_or_default();
+                        serde_json::json!({
+                            "index": i, "key": key_label(kb, i), "action": KeyAction::from_bytes(*e),
+                            "raw": format!("{:02x}{:02x}{:02x}{:02x}", e[0], e[1], e[2], e[3]), "changed": *e != def,
+                        })
+                    })
+                    .filter(|v| all || v["changed"] == true)
+                    .collect();
+                out(serde_json::Value::Array(rows), || {});
+                return Ok(());
+            }
             for (i, e) in l.entries.iter().enumerate() {
                 let def = kb.model.default_entry(i).unwrap_or_default();
                 if (all && def != [0; 4]) || *e != def {
@@ -593,6 +755,10 @@ fn macros(kb: &mut Keyboard, cmd: MacroCmd) -> Result<(), Error> {
     match cmd {
         MacroCmd::Show { slot } => {
             let m = kb.read_macro(slot)?;
+            if JSON.load(std::sync::atomic::Ordering::Relaxed) {
+                out(serde_json::to_value(&m)?, || {});
+                return Ok(());
+            }
             println!("repeat: {}", m.repeat_count);
             for e in m.events {
                 println!(
@@ -629,7 +795,10 @@ fn macros(kb: &mut Keyboard, cmd: MacroCmd) -> Result<(), Error> {
             kb.write_macro(slot, &Macro { repeat_count: repeat, events: ev })?;
             println!("Macro {slot} stored. Bind it with: epomaker keymap set <KEY> macro:{slot}");
         }
-        MacroCmd::Used => println!("{:?}", kb.used_macro_slots()?),
+        MacroCmd::Used => {
+            let u = kb.used_macro_slots()?;
+            out(serde_json::json!(u), || println!("{u:?}"));
+        }
     }
     Ok(())
 }
@@ -638,6 +807,20 @@ fn colors(kb: &mut Keyboard, cmd: ColorCmd) -> Result<(), Error> {
     match cmd {
         ColorCmd::Show => {
             let c = kb.key_colors()?;
+            if JSON.load(std::sync::atomic::Ordering::Relaxed) {
+                let rows: Vec<serde_json::Value> = kb
+                    .model
+                    .keys
+                    .iter()
+                    .filter_map(|k| k.matrix_index.map(|i| (k, i)))
+                    .map(|(k, i)| {
+                        serde_json::json!({"key": k.label.replace('\n', " "), "index": i,
+                            "color": format!("#{:06x}", c.get(i).copied().unwrap_or_default().0)})
+                    })
+                    .collect();
+                out(serde_json::Value::Array(rows), || {});
+                return Ok(());
+            }
             for k in &kb.model.keys {
                 if let Some(i) = k.matrix_index {
                     println!("{:<14} #{:06x}", k.label.replace('\n', " "), c.get(i).copied().unwrap_or_default().0);

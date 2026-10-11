@@ -19,6 +19,7 @@ pub mod keyboard;
 pub mod keycodes;
 pub mod keymap;
 pub mod lighting;
+pub mod live;
 pub mod macros;
 pub mod profile_file;
 pub mod protocol;

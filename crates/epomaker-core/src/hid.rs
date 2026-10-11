@@ -7,7 +7,7 @@ use crate::Error;
 use hidapi::{HidApi, HidDevice};
 
 /// A vendor interface found during enumeration.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct HidCandidate {
     pub path: String,
     pub vid: u16,

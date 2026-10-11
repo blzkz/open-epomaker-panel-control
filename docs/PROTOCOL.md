@@ -141,8 +141,24 @@ Custom effect (mode 13) colours are stored as RGB triplets indexed by matrix ent
 (128 × 3 = 384 bytes). One key: `14 SLOT IDX … R G B`. All keys: 7 packets
 `0C 00 80 01 NN 00 00 CK` + 56 bytes (`0x0180` = 384 = 64 × 6). Read: 6 × `8C 00 NN`.
 
+## Host-streamed effects
+
+Three effects only animate while the computer keeps sending data. The official app hides
+them on anything but Windows, but the firmware supports them:
+
+| Effect | Mode | Stream |
+|--------|------|--------|
+| Music follow 1 | 20 | `0D 00 00 00 00 00 00 CK` + 32 band levels (0..6), every ~30 ms |
+| Music follow 2 | 22 | same frames |
+| Screen color | 21 | `0E RR GG BB FF 00 00 CK`, every ~40 ms |
+
+Both use the Bit7 checksum (driver type 0). The vendor computes the bands from a Web Audio
+`AnalyserNode` (FFT 2048, smoothing 0.4, −100..−30 dB): the first 100 bins are offset by
+the minimum of bins 20..40, scaled so the maximum maps to 6, and bins 27..58 are sent. The
+screen color is the whole screen scaled down to one pixel. See `crates/epomaker-core/src/live.rs`.
+
 ## Not covered
 
 Firmware/bootloader updates (`0x7F`, OLED boot commands), screen uploads of the TH80 X,
-music/screen-follow streaming (`0x0D`, `0x0E`) and the Bluetooth (`0x4012/0x4013`) vendor
+and the Bluetooth (`0x4012/0x4013`) vendor
 pages are intentionally not implemented.

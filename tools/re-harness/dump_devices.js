@@ -3,6 +3,9 @@
 //
 // Usage: NODE_PATH=vendor/app/resources/app/node_modules node tools/re-harness/dump_devices.js <name-regex> out.json
 const fs = require('fs');
+// The vendor app hides the host-streamed effects (music follow, screen color) unless it runs
+// on Windows; pretend to be Windows so the device data lists every effect the firmware has.
+Object.defineProperty(process, 'platform', { value: 'win32' });
 const path = require('path');
 require('./fake');
 const L = require('./loader');
@@ -49,7 +52,6 @@ for (const d of support.filter((x) => filter.test(x.name))) {
   const inst = new cls(Object.assign({}, d, { devAddr: 'x' }));
   const vis = registry[d.name];
   models[d.name] = {
-    class: m[1],
     matrix: Array.from(inst.defaultMatrix),
     macro_max: inst.MACROMAX,
     light_modes: d.layout.light.types,
@@ -68,6 +70,5 @@ fs.writeFileSync(process.argv[3] || 'devices.json', JSON.stringify({
   devices,
   models,
   special_functions: mapping.specialFunTablectionMap,
-  hid_names: mapping.HidMapping,
 }, null, 1));
 console.error(`devices: ${devices.length}, models: ${Object.keys(models).join(', ')}`);

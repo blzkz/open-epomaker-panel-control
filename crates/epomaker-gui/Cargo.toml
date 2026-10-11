@@ -27,6 +27,7 @@ winresource = "0.1"
 autoshot = ["dep:png"]
 
 # ---- Linux packages (cargo deb -p epomaker-gui / cargo generate-rpm -p crates/epomaker-gui) ----
+# Run packaging/linux/completions.sh after the release build to create target/completions.
 
 [package.metadata.deb]
 name = "open-epomaker-panel"
@@ -50,6 +51,9 @@ assets = [
     ["../../packaging/icons/open-epomaker-panel.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
     ["../../packaging/icons/open-epomaker-panel.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
     ["../../README.md", "usr/share/doc/open-epomaker-panel/", "644"],
+    ["../../target/completions/epomaker.bash", "usr/share/bash-completion/completions/epomaker", "644"],
+    ["../../target/completions/_epomaker", "usr/share/zsh/vendor-completions/", "644"],
+    ["../../target/completions/epomaker.fish", "usr/share/fish/vendor_completions.d/", "644"],
 ]
 
 [package.metadata.generate-rpm]
@@ -67,4 +71,7 @@ assets = [
     { source = "../../packaging/icons/open-epomaker-panel.png", dest = "/usr/share/icons/hicolor/256x256/apps/open-epomaker-panel.png", mode = "644" },
     { source = "../../README.md", dest = "/usr/share/doc/open-epomaker-panel/README.md", mode = "644", doc = true },
     { source = "../../LICENSE", dest = "/usr/share/licenses/open-epomaker-panel/LICENSE", mode = "644", doc = true },
+    { source = "../../target/completions/epomaker.bash", dest = "/usr/share/bash-completion/completions/epomaker", mode = "644" },
+    { source = "../../target/completions/_epomaker", dest = "/usr/share/zsh/site-functions/_epomaker", mode = "644" },
+    { source = "../../target/completions/epomaker.fish", dest = "/usr/share/fish/vendor_completions.d/epomaker.fish", mode = "644" },
 ]

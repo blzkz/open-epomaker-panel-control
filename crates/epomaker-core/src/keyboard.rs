@@ -136,6 +136,20 @@ impl Keyboard {
         Ok(())
     }
 
+    // ---- host-streamed effects ----
+
+    /// Sends one frame of the "music follow" effects (32 band levels, 0..=6). The keyboard
+    /// must be on [`LightMode::MusicFollow2`](crate::lighting::LightMode) or `MusicFollow3`
+    /// and frames must keep coming (~every 30 ms) for it to animate.
+    pub fn send_music_levels(&mut self, levels: &[u8]) -> Result<(), Error> {
+        self.link.write(&crate::live::encode_music_frame(levels))
+    }
+
+    /// Sends the current screen color for the "screen color" effect (~every 40 ms).
+    pub fn send_screen_color(&mut self, color: Rgb) -> Result<(), Error> {
+        self.link.write(&crate::live::encode_screen_color(color))
+    }
+
     // ---- per-profile settings ----
 
     pub fn report_rate(&mut self, profile: u8) -> Result<Option<ReportRate>, Error> {

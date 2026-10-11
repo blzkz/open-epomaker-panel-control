@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/epomaker-core", "crates/epomaker-cli", "crates/epomaker-gui"]
+members = ["crates/epomaker-core", "crates/epomaker-host", "crates/epomaker-cli", "crates/epomaker-gui"]
 
 [workspace.package]
 version = "0.2.0"
@@ -11,6 +11,7 @@ rust-version = "1.88"
 
 [workspace.dependencies]
 epomaker-core = { path = "crates/epomaker-core" }
+epomaker-host = { path = "crates/epomaker-host" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
