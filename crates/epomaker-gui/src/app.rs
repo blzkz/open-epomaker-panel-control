@@ -2,6 +2,7 @@
 
 mod agent;
 mod colors;
+mod diagnostics;
 mod lighting;
 mod tester;
 
@@ -32,11 +33,21 @@ enum Tab {
     Agent,
     Settings,
     Backup,
+    Diagnostics,
 }
 
 impl Tab {
-    const ALL: [Tab; 8] =
-        [Tab::Lighting, Tab::Keymap, Tab::Colors, Tab::Macros, Tab::Tester, Tab::Agent, Tab::Settings, Tab::Backup];
+    const ALL: [Tab; 9] = [
+        Tab::Lighting,
+        Tab::Keymap,
+        Tab::Colors,
+        Tab::Macros,
+        Tab::Tester,
+        Tab::Agent,
+        Tab::Settings,
+        Tab::Backup,
+        Tab::Diagnostics,
+    ];
     fn label(self) -> &'static str {
         match self {
             Tab::Lighting => "Lighting",
@@ -47,6 +58,7 @@ impl Tab {
             Tab::Agent => "Tray agent",
             Tab::Settings => "Settings",
             Tab::Backup => "Backup",
+            Tab::Diagnostics => "Diagnostics",
         }
     }
 }
@@ -112,6 +124,8 @@ struct Prefs {
     last_device: Option<SavedTarget>,
     recent_colors: Vec<[u8; 3]>,
     light_auto: bool,
+    /// Read back every write from the keyboard.
+    verify: bool,
 }
 
 impl Default for Prefs {
@@ -122,6 +136,7 @@ impl Default for Prefs {
             zoom: 1.0,
             last_device: None,
             recent_colors: vec![],
+            verify: true,
             light_auto: true,
         }
     }
@@ -178,6 +193,17 @@ pub struct App {
     macro_file: String,
     last_heartbeat: Option<std::time::Instant>,
     tester: tester::TesterState,
+    // diagnostics
+    verify: bool,
+    selftest: Option<diagnostics::SelfTestRun>,
+    probe: Option<Vec<String>>,
+    // hotplug
+    hotplug: Option<crate::worker::Hotplug>,
+    /// Target of the connection in progress / of the open connection.
+    connecting: Option<Target>,
+    connected: Option<Target>,
+    /// The connected keyboard disappeared from USB.
+    unplugged: bool,
     agent: agent::AgentState,
     // settings
     confirm_reset: bool,
@@ -247,6 +273,13 @@ impl App {
             macro_file: default_macro_path(),
             last_heartbeat: None,
             tester: Default::default(),
+            verify: prefs.verify,
+            selftest: None,
+            probe: None,
+            hotplug: None,
+            connecting: None,
+            connected: None,
+            unplugged: false,
             agent: Default::default(),
             confirm_reset: false,
             backup_path: default_backup_path(),
@@ -262,6 +295,7 @@ impl App {
             return app;
         }
         app.refresh_devices();
+        app.hotplug = Some(crate::worker::Hotplug::start(cc.egui_ctx.clone(), std::time::Duration::from_secs(2)));
         match (app.target.clone(), &app.saved_target) {
             (Some(t @ Target::Hid(_)), _) => app.connect(t),
             (None, Some(SavedTarget::Demo(id))) => {
@@ -316,12 +350,62 @@ impl App {
         }
     }
 
+    /// Handles a new USB device list from the hotplug thread: notices when the open
+    /// keyboard is gone and connects to one that just appeared.
+    fn devices_changed(&mut self, list: Vec<HidCandidate>) {
+        let appeared: Vec<HidCandidate> =
+            list.iter().filter(|c| !self.candidates.iter().any(|o| o.path == c.path)).cloned().collect();
+        self.candidates = list;
+        let present = |t: &Option<Target>, list: &[HidCandidate]| match t {
+            Some(Target::Hid(c)) => list.iter().any(|x| x.path == c.path),
+            _ => true,
+        };
+        if !present(&self.connected, &self.candidates) {
+            self.connected = None;
+            self.dev = None;
+            self.unplugged = true;
+            self.error = None;
+            self.worker.set_live(None, None);
+            let text = self.t("Keyboard disconnected").to_string();
+            self.toast(ToastKind::Error, text);
+            self.worker.run_raw(
+                JobInfo::quiet("Disconnect"),
+                Box::new(|k: &mut Option<Keyboard>, _| {
+                    *k = None;
+                    Ok(Update::None)
+                }),
+            );
+        }
+        if !present(&self.target, &self.candidates) {
+            self.target = None;
+        }
+        let real = |t: &Option<Target>| matches!(t, Some(Target::Hid(_)));
+        if !real(&self.connected) && !real(&self.connecting) && !appeared.is_empty() {
+            // prefer the keyboard used last time
+            let saved = self.saved_target.clone();
+            let pick = appeared
+                .iter()
+                .find(|c| saved.as_ref() == Some(&SavedTarget::of(&Target::Hid((*c).clone()))))
+                .unwrap_or(&appeared[0]);
+            let t = Target::Hid(pick.clone());
+            self.target = Some(t.clone());
+            self.connect(t);
+        }
+        if self.target.is_none() {
+            self.target = self.candidates.first().cloned().map(Target::Hid);
+        }
+    }
+
     fn connect(&mut self, target: Target) {
         self.dev = None;
         self.selected = None;
         self.editor = None;
         self.macros.clear();
         self.colors.reset();
+        self.selftest = None;
+        self.connecting = Some(target.clone());
+        self.worker.set_live(None, None);
+        let verify = self.verify;
         self.saved_target = Some(SavedTarget::of(&target));
         self.worker.run_raw(
             JobInfo { label: "Connect", notify: false, blocking: true },
@@ -340,6 +424,7 @@ impl App {
                         Keyboard::connect(Box::new(HidTransport::open(&c)?), dongle)?
                     }
                 };
+                kb.set_verify(verify);
                 let snap = snapshot(&mut kb, progress)?;
                 *slot = Some(kb);
                 Ok(Update::Connected(Box::new(snap)))
@@ -359,8 +444,28 @@ impl App {
                 self.toast(ToastKind::Success, text);
                 let layers = s.layers.iter().cloned().collect();
                 self.dev = Some(DeviceState { snap: *s, layers });
+                self.unplugged = false;
+                // a connection made by connect() (factory reset and restore also send Connected)
+                if let Some(t) = self.connecting.take() {
+                    self.connected = Some(t);
+                }
             }
-            Update::Disconnected => self.dev = None,
+            Update::Disconnected => {
+                self.dev = None;
+                self.connected = None;
+            }
+            Update::SelfTestDevice(d) => {
+                if let Some(st) = &mut self.selftest {
+                    st.device = Some(*d);
+                }
+            }
+            Update::SelfTestStep(r) => {
+                if let Some(st) = &mut self.selftest {
+                    st.results.push(*r);
+                    st.running = st.results.len() < epomaker_core::selftest::Step::ALL.len();
+                }
+            }
+            Update::Probe(lines) => self.probe = Some(lines),
             Update::Light(l) => {
                 if let Some(l) = l {
                     self.light = l;
@@ -424,9 +529,15 @@ impl App {
                     let msg = format!("{}: {e}", self.t(info.label));
                     self.error = Some(msg.clone());
                     self.toast(ToastKind::Error, msg);
-                    #[cfg(target_os = "linux")]
                     if info.label == "Connect" {
+                        self.connecting = None;
+                        #[cfg(target_os = "linux")]
                         self.udev.show_for(&e.to_string());
+                    }
+                    if info.label == "Self-test" {
+                        if let Some(st) = &mut self.selftest {
+                            st.running = false;
+                        }
                     }
                 }
             }
@@ -1068,7 +1179,7 @@ fn default_backup_path() -> String {
 
 #[cfg(feature = "autoshot")]
 impl App {
-    const SHOTS: [&'static str; 13] = [
+    const SHOTS: [&'static str; 14] = [
         "lighting",
         "lighting-ripple",
         "keymap",
@@ -1080,6 +1191,7 @@ impl App {
         "agent",
         "settings",
         "backup",
+        "diagnostics",
         "udev",
         "light-theme",
     ];
@@ -1167,6 +1279,12 @@ impl App {
                 self.tester.record_for_demo(t + 0.26, 0x07, true);
             }
             "agent" => self.tab = Tab::Agent,
+            "diagnostics" => {
+                self.tab = Tab::Diagnostics;
+                if self.selftest.is_none() {
+                    self.start_selftest();
+                }
+            }
             "settings" => self.tab = Tab::Settings,
             "backup" => self.tab = Tab::Backup,
             "udev" => {
@@ -1237,6 +1355,12 @@ impl eframe::App for App {
         self.autoshot(&ctx);
         self.zoom = ctx.zoom_factor();
         self.heartbeat(&ctx);
+        if let Some(list) = self.hotplug.as_ref().and_then(|h| h.poll()) {
+            match list {
+                Ok(list) => self.devices_changed(list),
+                Err(e) => log::warn!("USB scan: {e}"),
+            }
+        }
         self.poll_worker();
         #[cfg(target_os = "linux")]
         if self.udev.ui(&ctx, self.lang) {
@@ -1273,16 +1397,26 @@ impl eframe::App for App {
                 let text = RichText::new(self.t(tab.label())).size(15.0);
                 let b =
                     egui::Button::selectable(self.tab == tab, text).min_size(egui::vec2(ui.available_width(), 28.0));
-                if ui.add_enabled(self.dev.is_some(), b).clicked() {
+                let enabled = self.dev.is_some() || tab == Tab::Diagnostics;
+                if ui.add_enabled(enabled, b).clicked() {
                     self.tab = tab;
                 }
             }
         });
         egui::CentralPanel::default().show(ui, |ui| {
-            if self.dev.is_none() {
+            if self.dev.is_none() && self.tab != Tab::Diagnostics {
                 ui.centered_and_justified(|ui| {
                     if self.worker.busy() {
                         ui.spinner();
+                    } else if self.unplugged {
+                        ui.label(
+                            RichText::new(format!(
+                                "{}\n\n{}",
+                                self.t("Keyboard disconnected"),
+                                self.t("It will reconnect automatically when plugged in again.")
+                            ))
+                            .size(18.0),
+                        );
                     } else {
                         ui.label(RichText::new(self.t("No keyboard connected")).size(18.0));
                     }
@@ -1301,6 +1435,7 @@ impl eframe::App for App {
                 Tab::Agent => self.agent_tab(ui),
                 Tab::Settings => self.settings_tab(ui),
                 Tab::Backup => self.backup_tab(ui),
+                Tab::Diagnostics => self.diagnostics_tab(ui),
             }
         });
         self.toasts_ui(&ctx);
@@ -1323,6 +1458,7 @@ impl eframe::App for App {
             last_device: self.saved_target.clone(),
             recent_colors: self.colors.recent.clone(),
             light_auto: self.light_auto,
+            verify: self.verify,
         };
         eframe::set_value(storage, eframe::APP_KEY, &prefs);
     }
@@ -1349,6 +1485,7 @@ mod tests {
             last_device: Some(SavedTarget::Hid { vid: 0x3151, pid: 0x4010, interface: 2 }),
             recent_colors: vec![[1, 2, 3]],
             light_auto: false,
+            verify: false,
         };
         let back: Prefs = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
         assert_eq!(back.lang, Some(Lang::Es));
@@ -1356,5 +1493,7 @@ mod tests {
         assert!(back.last_device == p.last_device && back.recent_colors == p.recent_colors);
         let old: Prefs = serde_json::from_str(r#"{"lang":"En"}"#).unwrap();
         assert!(old.light_auto && old.zoom == 1.0 && old.theme == ThemeChoice::System);
+        assert!(old.verify, "verify is on unless turned off");
+        assert!(!back.verify);
     }
 }

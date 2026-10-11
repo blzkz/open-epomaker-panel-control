@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.3.0 — 2026-10-12
+
+- Music-follow (two variants) and screen-color effects: the firmware has them, the
+  official app only offers them on Windows. The PC streams the data: system audio
+  (PulseAudio/PipeWire on Linux, WASAPI on Windows) analysed exactly like the vendor
+  app, and the screen color (Windows, X11, and Wayland through the screen-sharing portal).
+- CPU load bar on the number row (software effect).
+- Tray agent `epomaker-agent`: per-application profiles (Windows, X11, KDE Plasma on
+  Wayland), live effects, low-battery notifications, reconnection, start with the system.
+  It releases the keyboard while the control panel is open.
+- Control panel redesign: animated effect previews, rotary knob dial, searchable action
+  picker, selection and gradient tools for per-key colors, toasts and progress,
+  light/dark theme, interface size, remembered preferences, udev rule helper on Linux.
+- New tabs: key tester (with chatter detection) and tray agent settings.
+- Macro library: export/import macros as JSON files, mouse-move events, automatic free slot.
+- CLI: `live music|screen|cpu`, `macro export|import`, `--json`, shell completions.
+- Hardware self-test: `epomaker selftest --yes` and the GUI's new Diagnostics tab run
+  read-only checks plus three writes that are undone right away (brightness, one key on
+  profile 3, an unused macro slot) and produce a Markdown report for GitHub issues.
+- Verify-after-write: `Keyboard::set_verify` / `epomaker --verify` read every write back
+  and fail with a mismatch error; on by default in the GUI.
+- The GUI connects when a keyboard is plugged in, shows when it is unplugged and
+  remembers the last keyboard across restarts.
+- The firmware emulator can inject faults (dropped or corrupted writes, corrupted
+  answers, I/O errors) for tests.
+
 ## 0.2.0 — 2026-10-11
 
 - New models: EPOMAKER TH96, TH68, TH-21 (numpad) and EP84, wired and 2.4 GHz dongle, each

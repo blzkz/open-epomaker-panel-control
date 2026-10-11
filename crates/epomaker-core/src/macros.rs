@@ -18,7 +18,8 @@ pub const MACRO_SLOT_LEN: usize = 256;
 /// Number of macro slots available on YC500 keyboards.
 pub const MACRO_SLOTS: u8 = 50;
 const MOUSE_MOVE: u8 = 0xF9;
-const WRITE_CHUNK: usize = 56;
+/// Bytes of macro data carried by one write packet.
+pub const WRITE_CHUNK: usize = 56;
 const WRITE_MAX_CHUNKS: usize = 5;
 const READ_CHUNKS: u8 = 4;
 
@@ -225,6 +226,15 @@ pub fn encode_write(slot: u8, data: &[u8; MACRO_SLOT_LEN]) -> Result<Vec<Frame>,
             Frame::new(r, Checksum::Bit7)
         })
         .collect())
+}
+
+/// A single zeroed first chunk flagged as the last one: empties `slot`.
+/// ([`encode_write`] sends nothing for an all-zero slot, like the vendor app.)
+pub fn encode_clear(slot: u8) -> Result<Frame, MacroError> {
+    if slot >= MACRO_SLOTS {
+        return Err(MacroError::BadSlot(slot));
+    }
+    Ok(Frame::new(report_from(&[cmd::SET_MACRO_SIMPLE, slot, 0, WRITE_CHUNK as u8, 1]), Checksum::Bit7))
 }
 
 /// Queries for reading macro `slot`; concatenate the 4 × 64-byte responses.

@@ -113,7 +113,16 @@ impl LiveSession {
     }
 
     /// Samples once and sends a frame if it changed (or the keep-alive is due).
+    /// Verify-after-write is suspended meanwhile: streamed frames are not read back.
     pub fn step(&mut self, kb: &mut Keyboard) -> Result<Frame, HostError> {
+        let verify = kb.verify();
+        kb.set_verify(false);
+        let r = self.step_inner(kb);
+        kb.set_verify(verify);
+        r
+    }
+
+    fn step_inner(&mut self, kb: &mut Keyboard) -> Result<Frame, HostError> {
         let frame = match &mut self.source {
             Source::Audio(capture, analyzer) => {
                 analyzer.push(&capture.drain());

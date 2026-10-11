@@ -29,6 +29,9 @@ struct Cli {
     /// Machine-readable JSON output for commands that print information.
     #[arg(long, global = true)]
     json: bool,
+    /// Read every write back and fail if the keyboard did not store it.
+    #[arg(long, global = true)]
+    verify: bool,
     #[command(subcommand)]
     command: Cmd,
 }
@@ -40,6 +43,13 @@ enum Cmd {
     /// Read-only diagnostics: sends only GET commands and prints the raw answers.
     /// Safe first step with a keyboard that was never tested with this tool.
     Probe,
+    /// Hardware self-test: read-only checks plus small writes that are undone right
+    /// away (brightness, one key of profile 3, an unused macro slot). Prints a Markdown
+    /// report to paste into a GitHub issue.
+    Selftest {
+        #[arg(long)]
+        yes: bool,
+    },
     /// Show model, firmware and current settings.
     Info,
     /// Host-driven effects that need the computer to stream data (until Ctrl+C).
@@ -275,6 +285,7 @@ fn open(cli: &Cli) -> Result<Keyboard, Error> {
         Keyboard::open_first()?
     };
     kb.set_trace(cli.trace);
+    kb.set_verify(cli.verify);
     Ok(kb)
 }
 
@@ -316,11 +327,21 @@ fn run(cli: Cli) -> Result<(), Error> {
         return Ok(());
     }
     if let Cmd::Probe = cli.command {
-        return probe();
+        epomaker_core::probe::run(|l| println!("{l}"))?;
+        println!("\nPlease share this output when reporting results for a new keyboard.");
+        return Ok(());
+    }
+    if let Cmd::Selftest { yes: false } = cli.command {
+        return Err(Error::InvalidArgument(
+            "the self-test briefly changes the brightness, one key of profile 3 and an unused macro slot, \
+             then restores them; pass --yes to run it"
+                .into(),
+        ));
     }
     let mut kb = open(&cli)?;
     match cli.command {
         Cmd::List | Cmd::Probe | Cmd::Completions { .. } => unreachable!(),
+        Cmd::Selftest { .. } => selftest(&mut kb)?,
         Cmd::Info => info(&mut kb)?,
         Cmd::Live { cmd } => live(&mut kb, cmd)?,
         Cmd::Light { cmd } => light(&mut kb, cmd)?,
@@ -466,59 +487,34 @@ fn live(kb: &mut Keyboard, cmd: LiveCmd) -> Result<(), Error> {
     })
 }
 
-fn probe() -> Result<(), Error> {
-    use epomaker_core::protocol::{cmd, query};
-    use epomaker_core::transport::{hex, Transport};
-    println!("All interfaces of vendor 0x3151:");
-    for c in epomaker_core::hid::enumerate_vendor(0x3151)? {
-        println!(
-            "   {:04x}:{:04x} usage {:04x}/{:04x} if{} \"{} {}\" {}",
-            c.vid, c.pid, c.usage_page, c.usage, c.interface, c.manufacturer, c.product, c.path
-        );
-    }
-    let list = epomaker_core::hid::enumerate()?;
-    if list.is_empty() {
-        println!("No configuration interface of a known model found (usage page 0xFFFF / interface 2).");
-    }
-    let queries: [(&str, u8, u8, u8); 10] = [
-        ("device id", cmd::GET_DEVICE_ID, 0, 0),
-        ("firmware", cmd::GET_FIRMWARE, 0, 0),
-        ("battery", cmd::GET_BATTERY, 0, 0),
-        ("profile", cmd::GET_PROFILE, 0, 0),
-        ("lighting", cmd::GET_LED, 0, 0),
-        ("report rate p0", cmd::GET_REPORT_RATE, 0, 0),
-        ("options p0", cmd::GET_KB_OPTION, 0, 0),
-        ("debounce", cmd::GET_DEBOUNCE, 0, 0),
-        ("sleep", cmd::GET_SLEEP_TIME, 0, 0),
-        ("key matrix p0 #0", cmd::GET_KEY_MATRIX, 0, 0),
-    ];
-    for c in list {
-        println!(
-            "== {:04x}:{:04x} usage {:04x}/{:04x} if{} \"{} {}\" {}",
-            c.vid, c.pid, c.usage_page, c.usage, c.interface, c.manufacturer, c.product, c.path
-        );
-        let mut t = match epomaker_core::hid::HidTransport::open(&c) {
-            Ok(t) => t,
-            Err(e) => {
-                println!("   cannot open: {e}");
-                continue;
-            }
+fn selftest(kb: &mut Keyboard) -> Result<(), Error> {
+    use epomaker_core::selftest::{self, Outcome, Step};
+    eprintln!("Self-test of {} ({})", kb.info.display_name, kb.describe());
+    let device = selftest::summary(kb);
+    let mut steps = Vec::new();
+    for step in Step::ALL {
+        eprint!("  {:<32} ", step.title());
+        let r = selftest::run_step(kb, step);
+        let restored = match r.restored {
+            Some(true) => ", restored",
+            Some(false) => ", NOT RESTORED",
+            None => "",
         };
-        for (name, command, a1, a2) in queries {
-            let f = query(command, a1, a2);
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            let r = t.send(&f.wire_bytes()).and_then(|_| {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-                t.receive()
-            });
-            match r {
-                Ok(resp) => println!("   {name:<18} -> {}", hex(&resp)),
-                Err(e) => println!("   {name:<18} !! {e}"),
-            }
+        match (&r.outcome, &r.error) {
+            (Outcome::Passed, _) => eprintln!("ok{restored}"),
+            (Outcome::Skipped, e) => eprintln!("skipped: {}", e.as_deref().unwrap_or_default()),
+            (Outcome::Failed, e) => eprintln!("FAILED{restored}: {}", e.as_deref().unwrap_or_default()),
         }
+        steps.push(r);
     }
-    println!("\nPlease share this output when reporting results for a new keyboard.");
-    Ok(())
+    let report = selftest::SelfTestReport { device, steps };
+    eprintln!("\nPaste the report below into a GitHub issue:\n");
+    println!("{}", report.to_markdown(concat!("epomaker ", env!("CARGO_PKG_VERSION"))));
+    if report.passed() {
+        Ok(())
+    } else {
+        Err(Error::Protocol("self-test failed (see the report)".into()))
+    }
 }
 
 fn info(kb: &mut Keyboard) -> Result<(), Error> {
