@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- New models: EPOMAKER TH96, TH68, TH-21 (numpad) and EP84, wired and 2.4 GHz dongle, each
+  verified against byte vectors recorded from the official software.
+- `tools/re-harness/gen_golden.js` takes the device id (and optionally the class) of the
+  model to record; the golden test-suite runs for every supported model.
+
 ## 0.1.1 — 2026-10-11
 
 - The project is now licensed under MIT; every package and archive ships the license.

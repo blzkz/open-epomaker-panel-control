@@ -8,7 +8,13 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
-const TH80_FAMILY: &str = include_str!("../data/th80_family.json");
+const SOURCES: [&str; 5] = [
+    include_str!("../data/th80_family.json"),
+    include_str!("../data/th96.json"),
+    include_str!("../data/th68_soc.json"),
+    include_str!("../data/th21.json"),
+    include_str!("../data/ep84_soc.json"),
+];
 
 /// One (model, connection) entry as known by the vendor software.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,7 +93,7 @@ pub struct Database {
 impl Database {
     pub fn get() -> &'static Database {
         static DB: OnceLock<Database> = OnceLock::new();
-        DB.get_or_init(|| Database::parse(&[TH80_FAMILY]))
+        DB.get_or_init(|| Database::parse(&SOURCES))
     }
 
     fn parse(sources: &[&str]) -> Database {
@@ -267,6 +273,26 @@ mod tests {
         assert_eq!(model.pics_count(), 6);
         assert!(model.keys.iter().all(|k| k.matrix_index.is_some()));
         assert!(model.caps(LightMode::Wave).unwrap().options.len() == 4);
+    }
+
+    #[test]
+    fn database_loads_other_models() {
+        let db = Database::get();
+        for (id, name, pid) in [
+            (834, "yc500_th96", 0x4010),
+            (988, "yc500_th68_soc", 0x4015),
+            (789, "yc500_th21", 0x4010),
+            (1081, "yc500_ep84_soc", 0x4015),
+        ] {
+            let dev = db.device_by_id(id).unwrap_or_else(|| panic!("{name} wired"));
+            assert_eq!((dev.name.as_str(), dev.vid, dev.pid), (name, 0x3151, pid));
+            assert!(db.device_by_id(database_id(id as u32, true)).is_some(), "{name} dongle");
+            let model = db.model(name).unwrap();
+            assert_eq!(model.matrix_len(), 128, "{name}");
+            assert_eq!(model.pics_count(), 6, "{name}");
+            assert!(!model.has_screen, "{name}");
+            assert!(!model.keys.is_empty() && model.keys.iter().all(|k| k.matrix_index.is_some()), "{name}");
+        }
     }
 
     #[test]

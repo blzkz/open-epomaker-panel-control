@@ -2,7 +2,11 @@
 // HID feature reports they produce (and how they decode canned responses). The output is a
 // plain-data JSON file of byte vectors used as conformance tests for the Rust implementation.
 //
-// Usage: NODE_PATH=vendor/app/resources/app/node_modules node tools/re-harness/gen_golden.js out.json
+// Usage: NODE_PATH=vendor/app/resources/app/node_modules node tools/re-harness/gen_golden.js out.json [device-id] [Class]
+//
+// device-id is the model id from `supportYC500Dev` (default 1118, wired TH80); the class defaults
+// to the one the vendor factory instantiates for that model. The keys used by the key-mapping and
+// per-key color cases are picked from the model's own matrix and listed in `meta.keys`.
 const fs = require('fs');
 const path = require('path');
 const F = require('./fake');
@@ -19,21 +23,50 @@ function findModule(snippet) {
   return hits[0].replace(/\.js$/, '');
 }
 
-const TH80 = L.load(findModule('exports.YC500_TH80=void 0')).YC500_TH80;
 const support = L.load(findModule('exports.supportYC500Dev=void 0')).supportYC500Dev;
-const devType = Object.assign({}, support.find((d) => d.id === 1118), { devAddr: 'fake' });
+const devId = Number(process.argv[3] || 1118);
+const devEntry = support.find((d) => d.id === devId);
+if (!devEntry) throw new Error(`unknown device id ${devId}`);
+const devType = Object.assign({}, devEntry, { devAddr: 'fake' });
+const factorySrc = fs.readFileSync(path.join(INDEX, `${findModule('case"yc500_th80":return new')}.js`), 'utf8');
+const className = process.argv[4]
+  || (factorySrc.match(new RegExp(`case"${devType.name}":return new \\w+\\.(\\w+)\\(`)) || [])[1];
+if (!className) throw new Error(`no class for ${devType.name}`);
+const Model = L.load(findModule(`exports.${className}=void 0`))[className];
 
 const hex = (a) => Buffer.from(a).toString('hex');
 const cases = [];
 
 function newDev() {
-  const d = new TH80(devType);
+  const d = new Model(devType);
   d.currentProfile = 0;
   d.allLayerConfigs = [];
   d.reComData = { profile: 0, matrix: Buffer.from(d.defaultMatrix), marcroBuf: [] };
   d.reFnData = { profile: 0, matrix: undefined, marcroBuf: [] };
   return d;
 }
+
+// Keys used by the cases below, by role. The TH80 choices come first; a model that lacks one gets
+// the next unused plain key of its own matrix instead (e.g. a numpad has no 'A' or F-keys).
+const factory = [...newDev().defaultMatrix];
+const entries = [];
+for (let i = 0; i < factory.length; i += 4) entries.push(factory.slice(i, i + 4));
+const plain = entries.filter((e) => e[0] === 0 && e[1] === 0 && e[2] !== 0 && e[3] === 0).map((e) => e[2]);
+const picked = [];
+const pick = (want) => {
+  const k = plain.includes(want) && !picked.includes(want) ? want : plain.find((h) => !picked.includes(h));
+  if (k === undefined) throw new Error(`${devType.name}: not enough keys`);
+  picked.push(k);
+  return k;
+};
+const KEYS = {
+  a: pick(4), esc: pick(41), f: [57, 58, 59, 60, 61, 62].map(pick), mouse: pick(63),
+  macros: [30, 31, 32, 33].map(pick), b: pick(5), shift: pick(225),
+};
+// a key whose matrix entry is not a plain HID usage (addressed by its 32-bit value)
+const special = entries.find((e) => e[0] === 3 && e[1] === 0 && e[2] === 226 && e[3] === 0)
+  || entries.find((e) => e[0] !== 0);
+KEYS.special = special ? ((special[0] << 24) | (special[1] << 16) | (special[2] << 8) | special[3]) >>> 0 : null;
 
 // responses: array of 64-byte arrays returned in order on each read.
 async function record(name, fn, responses = []) {
@@ -128,21 +161,21 @@ async function record(name, fn, responses = []) {
 
   // ---- key remap: simple writes ----
   const keyCfgs = [
-    { type: 'combo', original: 4, skey: 'none', key: 5, key2: 0 }, // A -> B
-    { type: 'combo', original: 4, skey: 'ctrl', key: 6, key2: 0 }, // A -> Ctrl+C
-    { type: 'combo', original: 41, skey: 'shift', key: 30, key2: 31 },
-    { type: 'forbidden', original: 57 }, // disable caps
-    { type: 'ConfigChangeToMouseBtn', original: 58, key: -1000 },
-    { type: 'ConfigFunction', original: 59, key: '静音' },
-    { type: 'ConfigFunction', original: 60, key: '音量大' },
-    { type: 'ConfigFunction', original: 61, key: '计算器' },
-    { type: 'ConfigFunction', original: 62, key: 'fn' },
-    { type: 'combo', original: 0x03000000 | (226 << 8), skey: 'none', key: 30, key2: 0 },
-    { type: 'combo', original: 225, skey: 'none', key: 229, key2: 0, index: 0 },
+    { type: 'combo', original: KEYS.a, skey: 'none', key: 5, key2: 0 }, // A -> B
+    { type: 'combo', original: KEYS.a, skey: 'ctrl', key: 6, key2: 0 }, // A -> Ctrl+C
+    { type: 'combo', original: KEYS.esc, skey: 'shift', key: 30, key2: 31 },
+    { type: 'forbidden', original: KEYS.f[0] }, // disable caps
+    { type: 'ConfigChangeToMouseBtn', original: KEYS.f[1], key: -1000 },
+    { type: 'ConfigFunction', original: KEYS.f[2], key: '静音' },
+    { type: 'ConfigFunction', original: KEYS.f[3], key: '音量大' },
+    { type: 'ConfigFunction', original: KEYS.f[4], key: '计算器' },
+    { type: 'ConfigFunction', original: KEYS.f[5], key: 'fn' },
   ];
+  if (KEYS.special !== null) keyCfgs.push({ type: 'combo', original: KEYS.special, skey: 'none', key: 30, key2: 0 });
+  keyCfgs.push({ type: 'combo', original: KEYS.shift, skey: 'none', key: 229, key2: 0, index: 0 });
   const ifc = L.load(findModule('exports.MouseKey=void 0'));
   for (const k of Object.keys(ifc.MouseKey).filter((x) => isNaN(Number(x)))) {
-    keyCfgs.push({ type: 'ConfigChangeToMouseBtn', original: 63, key: ifc.MouseKey[k] });
+    keyCfgs.push({ type: 'ConfigChangeToMouseBtn', original: KEYS.mouse, key: ifc.MouseKey[k] });
   }
   for (const c of keyCfgs) {
     await record(`key_simple ${JSON.stringify(c)}`, (d) => d.setKeyConfigSimple(Object.assign({}, c)));
@@ -152,7 +185,7 @@ async function record(name, fn, responses = []) {
 
   // ---- macros ----
   const macro1 = {
-    type: 'ConfigMacro', original: 30, macroType: 'repeat_times', repeatCount: 1,
+    type: 'ConfigMacro', original: KEYS.macros[0], macroType: 'repeat_times', repeatCount: 1,
     macro: [
       { type: 'keyboard', action: 'down', value: 4 }, { type: 'delay', value: 50 },
       { type: 'keyboard', action: 'up', value: 4 }, { type: 'delay', value: 200 },
@@ -160,7 +193,7 @@ async function record(name, fn, responses = []) {
     ],
   };
   const macro2 = {
-    type: 'ConfigMacro', original: 31, macroType: 'on_off', repeatCount: 3,
+    type: 'ConfigMacro', original: KEYS.macros[1], macroType: 'on_off', repeatCount: 3,
     macro: [
       { type: 'mouse_button', action: 'down', value: -1000 }, { type: 'delay', value: 1000 },
       { type: 'mouse_button', action: 'up', value: -1000 },
@@ -169,12 +202,12 @@ async function record(name, fn, responses = []) {
       { type: 'keyboard', action: 'up', value: 30 }, { type: 'keyboard', action: 'up', value: 225 },
     ],
   };
-  const macro3 = Object.assign({}, macro1, { original: 32, macroType: 'touch_repeat', repeatCount: 65535 });
+  const macro3 = Object.assign({}, macro1, { original: KEYS.macros[2], macroType: 'touch_repeat', repeatCount: 65535 });
   for (const m of [macro1, macro2, macro3]) {
     await record(`macro_key ${JSON.stringify(m)}`, (d) => d.setKeyConfigSimple(JSON.parse(JSON.stringify(m))));
   }
   // long macro spanning several chunks
-  const longMacro = { type: 'ConfigMacro', original: 33, macroType: 'repeat_times', repeatCount: 2, macro: [] };
+  const longMacro = { type: 'ConfigMacro', original: KEYS.macros[3], macroType: 'repeat_times', repeatCount: 2, macro: [] };
   for (let i = 0; i < 40; i++) longMacro.macro.push({ type: 'keyboard', action: i % 2 ? 'up' : 'down', value: 4 + (i >> 1) }, { type: 'delay', value: 10 + i });
   await record('macro_key long', (d) => d.setKeyConfigSimple(JSON.parse(JSON.stringify(longMacro))));
   // macro byte buffer encoding only
@@ -190,12 +223,12 @@ async function record(name, fn, responses = []) {
   // ---- full matrix read + decode ----
   const mm = [...newDev().defaultMatrix];
   const idx = (hid) => { for (let i = 0; i < mm.length; i += 4) if (mm[i] === 0 && mm[i + 1] === 0 && mm[i + 2] === hid && mm[i + 3] === 0) return i; };
-  let i4 = idx(4); mm[i4] = 0; mm[i4 + 1] = 224; mm[i4 + 2] = 6; mm[i4 + 3] = 0; // A -> ctrl+c
-  i4 = idx(57); mm.fill(0, i4, i4 + 4); // caps disabled
-  i4 = idx(58); mm.splice(i4, 4, 1, 0, 240, 0); // F1 -> left click
-  i4 = idx(59); mm.splice(i4, 4, 3, 0, 205, 0); // F2 -> play/pause
-  i4 = idx(60); mm.splice(i4, 4, 0, 0, 1, 0); // F3 -> unknown 0.0.1.0
-  i4 = idx(61); mm.splice(i4, 4, 3, 0, 0x99, 0x09); // F4 -> unknown consumer
+  let i4 = idx(KEYS.a); mm[i4] = 0; mm[i4 + 1] = 224; mm[i4 + 2] = 6; mm[i4 + 3] = 0; // A -> ctrl+c
+  i4 = idx(KEYS.f[0]); mm.fill(0, i4, i4 + 4); // caps disabled
+  i4 = idx(KEYS.f[1]); mm.splice(i4, 4, 1, 0, 240, 0); // F1 -> left click
+  i4 = idx(KEYS.f[2]); mm.splice(i4, 4, 3, 0, 205, 0); // F2 -> play/pause
+  i4 = idx(KEYS.f[3]); mm.splice(i4, 4, 0, 0, 1, 0); // F3 -> unknown 0.0.1.0
+  i4 = idx(KEYS.f[4]); mm.splice(i4, 4, 3, 0, 0x99, 0x09); // F4 -> unknown consumer
   const chunks = []; for (let c = 0; c < 8; c++) chunks.push(mm.slice(64 * c, 64 * c + 64));
   await record('matrix_read', (d) => d.getKeyConfig(0, true), chunks);
   await record('fn_matrix_read', (d) => d.getFnKeyConfig(0, true), chunks);
@@ -211,22 +244,24 @@ async function record(name, fn, responses = []) {
   void mbuf;
 
   // ---- per-key RGB (user picture) ----
-  await record('userpic_simple', (d) => d.setLightPicSimple({ hid: 4, rgb: 0x112233 }, 1));
-  await record('userpic_simple_esc', (d) => d.setLightPicSimple({ hid: 41, rgb: 0xff8000 }, 0));
-  const pic = [{ hid: 41, rgb: 0xff0000 }, { hid: 4, rgb: 0x00ff00 }, { hid: 5, rgb: 0x0000ff }];
+  await record('userpic_simple', (d) => d.setLightPicSimple({ hid: KEYS.a, rgb: 0x112233 }, 1));
+  await record('userpic_simple_esc', (d) => d.setLightPicSimple({ hid: KEYS.esc, rgb: 0xff8000 }, 0));
+  const pic = [{ hid: KEYS.esc, rgb: 0xff0000 }, { hid: KEYS.a, rgb: 0x00ff00 }, { hid: KEYS.b, rgb: 0x0000ff }];
   await record('userpic_full', (d) => d.setLightPic(pic));
-  const picBuf = Buffer.alloc(64 * 6);
+  const pics = newDev().picsCount;
+  const picBuf = Buffer.alloc(64 * pics);
   picBuf[0] = 0xff; picBuf[1] = 0; picBuf[2] = 0; // index 0 (Esc) red
   picBuf[3 * 9] = 0; picBuf[3 * 9 + 1] = 0xff; picBuf[3 * 9 + 2] = 0; // index 9 ('A') green
-  const pchunks = []; for (let c = 0; c < 6; c++) pchunks.push([...picBuf.slice(64 * c, 64 * c + 64)]);
+  const pchunks = []; for (let c = 0; c < pics; c++) pchunks.push([...picBuf.slice(64 * c, 64 * c + 64)]);
   await record('userpic_read', (d) => d.getLightPic(), pchunks);
 
   const meta = {
     generator: 'tools/re-harness/gen_golden.js',
-    source: 'EPOMAKER Driver 1.2.66 (WIN20230421), class YC500_TH80',
+    source: `EPOMAKER Driver 1.2.66 (WIN20230421), class ${className}`,
     device: { id: devType.id, name: devType.name, vid: devType.vid, pid: devType.pid },
     picsCount: newDev().picsCount,
     macroMax: newDev().MACROMAX,
+    keys: KEYS,
   };
   fs.writeFileSync(process.argv[2] || 'golden.json', JSON.stringify({ meta, cases }, null, 1));
   console.error(`wrote ${cases.length} cases`);

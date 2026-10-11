@@ -16,7 +16,8 @@ struct Cli {
     /// Use an emulated keyboard instead of real hardware.
     #[arg(long, global = true)]
     demo: bool,
-    /// Model id emulated by --demo (1118 = TH80, 1091 = TH80 SOC, 886 = TH80 SE, 928 = TH80 X, 741 = TH80 UK).
+    /// Model id emulated by --demo (1118 = TH80, 1091 = TH80 SOC, 886 = TH80 SE, 928 = TH80 X, 741 = TH80 UK,
+    /// 834 = TH96, 988 = TH68, 789 = TH21, 1081 = EP84).
     #[arg(long, global = true, default_value_t = 1118)]
     demo_model: i64,
     /// Open this HID path (see `probe`) instead of auto-detecting.

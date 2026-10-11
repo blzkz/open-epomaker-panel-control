@@ -30,13 +30,16 @@ client that talks to `iot_driver.exe` with a recorder that applies the driver's
 checksums, and stubs the UI store. This lets the original classes run under Node:
 
 ```bash
-NODE_PATH=vendor/app/resources/app/node_modules node tools/re-harness/gen_golden.js crates/epomaker-core/tests/data/golden_th80.json
+NODE_PATH=vendor/app/resources/app/node_modules node tools/re-harness/gen_golden.js crates/epomaker-core/tests/data/golden_th80.json 1118
 NODE_PATH=vendor/app/resources/app/node_modules node tools/re-harness/dump_devices.js '^yc500_th80' crates/epomaker-core/data/th80_family.json
 ```
 
-`gen_golden.js` records the exact reports produced for ~480 operations and how canned
-responses are decoded; the Rust test-suite (`crates/epomaker-core/tests/golden.rs`) must
-reproduce all of them byte for byte. `dump_devices.js` exports device facts in this
+`gen_golden.js <out.json> <device-id> [Class]` records the exact reports produced for ~480
+operations and how canned responses are decoded; the class defaults to the one the vendor
+factory uses for that model, and the keys used by the key-mapping cases are taken from the
+model's own matrix (listed in `meta.keys`). The Rust test-suite
+(`crates/epomaker-core/tests/golden.rs`) must reproduce all of them byte for byte, for every
+model listed in its `golden_suite!`. `dump_devices.js` exports device facts in this
 project's own schema.
 
 ## 3. The native driver
@@ -54,9 +57,20 @@ Analysis was done with `objdump -d -M intel` and Ghidra 12 headless
 
 ## Adding another YC500 keyboard
 
-1. Find its `name` in `supportYC500Dev` (e.g. `yc500_rt100`).
-2. Check that its class does not override the YC500 commands (compare with
-   `YC500Common`; screen models add extra commands).
-3. Export it: `dump_devices.js '^yc500_rt100$' crates/epomaker-core/data/rt100.json` and add the
-   file to `Database::get()` in `devices.rs`.
-4. Optionally adapt `gen_golden.js` to the new class and add its vectors to the tests.
+1. Find its `name` and wired `id` in `supportYC500Dev` (e.g. `yc500_th96`, 834).
+2. Check that its class does not override the YC500 commands: most model classes only set
+   `defaultMatrix` (`class r extends e.YC500Common{constructor(){…this.defaultMatrix=…}}`).
+   Models with a screen (`otherSetting.LED`) or extra commands are left out for now.
+3. Export it: `dump_devices.js '^yc500_th96$' crates/epomaker-core/data/th96.json` and add the
+   file to `SOURCES` in `devices.rs`.
+4. Record its vectors: `gen_golden.js crates/epomaker-core/tests/data/golden_th96.json 834` and
+   add the file to `golden_suite!` in `tests/golden.rs`.
+
+| Model | Class | Status |
+|---|---|---|
+| TH80 family, TH96, TH68 (`yc500_th68_soc`), TH-21, EP84 (`yc500_ep84_soc`) | `defaultMatrix` only | supported |
+| RT100 (`yc500_rt100`) | `defaultMatrix` only (reuses the KFC100 matrix) | skipped: has a screen (`otherSetting.LED`) |
+
+The TH-21 lists polling rates of 124/240/400/1000 Hz. The vendor's `setReportRate` only
+knows 125/250/500/1000, so for the first three it sends rate byte `0`; this project only
+offers 1000 Hz in the GUI for that model, and the CLI accepts the standard rates.

@@ -1,13 +1,13 @@
 # Open Epomaker Panel
 
 An open-source control panel for **EPOMAKER** keyboards on **Linux and Windows**, written in
-Rust. It is a replacement for the official "EPOMAKER Driver". The first supported family is
-the **TH80** (TH80, TH80 Pro, TH80 SE, TH80 X and TH80 UK).
+Rust. It is a replacement for the official "EPOMAKER Driver" for the EPOMAKER keyboards built
+on the RongYuan YC500 platform (see [Supported keyboards](#supported-keyboards)).
 
 > 🇪🇸 Spanish version: [README.es.md](README.es.md)
 
 > ⚠️ **Status: experimental.** The protocol was reverse engineered from the official
-> software and is checked byte-for-byte against it (479 test vectors), but it has **not yet
+> software and is checked byte-for-byte against it (2,359 test vectors across 5 models), but it has **not yet
 > been tested on a physical keyboard**. Start with the read-only `epomaker probe` command.
 > This project is not affiliated with EPOMAKER.
 
@@ -27,6 +27,27 @@ the **TH80** (TH80, TH80 Pro, TH80 SE, TH80 X and TH80 UK).
 
 Not implemented on purpose: firmware updates, TH80 X screen uploads, and music/screen
 "follow" effects (those need the PC to stream data).
+
+## Supported keyboards
+
+Wired (USB) and 2.4 GHz dongle connections are supported for every model. Each one is
+checked against byte vectors recorded from the official software; none has been tested on
+hardware yet.
+
+| Model | Firmware id (wired) | `--demo-model` |
+|---|---|---|
+| TH80, TH80 Pro | 1118, 742 | `1118` |
+| TH80 SOC | 1091 | `1091` |
+| TH80 SE | 886 | `886` |
+| TH80 X (screen not supported) | 928 | `928` |
+| TH80 UK | 741 | `741` |
+| TH96 | 834 | `834` |
+| TH68 | 988 | `988` |
+| TH-21 (numpad) | 789 | `789` |
+| EP84 | 1081 | `1081` |
+
+Other YC500 models (e.g. RT100, which has a screen) can be added from the official
+software's data; see [docs/REVERSE_ENGINEERING.md](docs/REVERSE_ENGINEERING.md#adding-another-yc500-keyboard).
 
 ## Download
 
@@ -126,7 +147,7 @@ git-ignored.
 
 ## Testing on real hardware
 
-If you own a TH80 (or another EPOMAKER YC500 keyboard), please help:
+If you own one of the keyboards above (or another EPOMAKER YC500 keyboard), please help:
 
 1. `epomaker probe` and share the output.
 2. `epomaker info`, then try a lighting change (`epomaker light set breath --color 00ff00`).

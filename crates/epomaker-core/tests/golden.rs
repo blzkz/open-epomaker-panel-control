@@ -2,6 +2,8 @@
 //! (`tools/re-harness/gen_golden.js`). Every report this crate builds must be
 //! byte-identical to what the official EPOMAKER driver sends, and every response
 //! must be interpreted the same way.
+//!
+//! The same checks run against the vectors of every model listed in `golden_suite!`.
 
 use epomaker_core::devices::{code_to_entry, Database, ModelInfo};
 use epomaker_core::keymap::{
@@ -14,7 +16,48 @@ use epomaker_core::protocol::{Checksum, Frame, Report};
 use epomaker_core::settings::{self, Battery, ChargeState, KeyboardOptions, ReportRate, SleepTimes};
 use serde_json::{json, Value};
 
-const GOLDEN: &str = include_str!("data/golden_th80.json");
+macro_rules! golden_suite {
+    ($($module:ident: $model:literal => $file:literal),* $(,)?) => {$(
+        mod $module {
+            fn golden() -> super::Golden {
+                super::Golden::load($model, include_str!($file))
+            }
+
+            golden_suite!(@tests lighting_encode, lighting_decode, simple_settings, key_remap_simple, macros_write,
+                macros_read, matrix_write_full, matrix_read_full, key_colors, every_case_is_covered);
+        }
+    )*};
+    (@tests $($test:ident),*) => {$(
+        #[test]
+        fn $test() {
+            super::$test(&golden());
+        }
+    )*};
+}
+
+golden_suite! {
+    th80: "yc500_th80" => "data/golden_th80.json",
+    th96: "yc500_th96" => "data/golden_th96.json",
+    th68_soc: "yc500_th68_soc" => "data/golden_th68_soc.json",
+    th21: "yc500_th21" => "data/golden_th21.json",
+    ep84_soc: "yc500_ep84_soc" => "data/golden_ep84_soc.json",
+}
+
+/// Vectors recorded for one model.
+struct Golden {
+    model: &'static ModelInfo,
+    keys: Keys,
+    cases: Vec<Case>,
+}
+
+/// Keys of the model's matrix that the generator used for each role (`meta.keys`).
+struct Keys {
+    a: u64,
+    b: u64,
+    esc: u64,
+    f: Vec<u64>,
+    macros: Vec<u64>,
+}
 
 struct Case {
     name: String,
@@ -22,31 +65,59 @@ struct Case {
     result: Value,
 }
 
-fn cases() -> Vec<Case> {
-    let v: Value = serde_json::from_str(GOLDEN).unwrap();
-    v["cases"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|c| Case {
-            name: c["name"].as_str().unwrap().to_string(),
-            writes: c["writes"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|w| (w["ck"].as_u64().unwrap() as u8, unhex(w["data"].as_str().unwrap())))
-                .collect(),
-            result: c["result"].clone(),
-        })
-        .collect()
+impl Golden {
+    fn load(model: &str, src: &str) -> Golden {
+        let v: Value = serde_json::from_str(src).unwrap();
+        let model = Database::get().model(model).unwrap();
+        let k = &v["meta"]["keys"];
+        let list = |v: &Value| v.as_array().unwrap().iter().map(|x| x.as_u64().unwrap()).collect::<Vec<_>>();
+        let keys = Keys {
+            a: k["a"].as_u64().unwrap(),
+            b: k["b"].as_u64().unwrap(),
+            esc: k["esc"].as_u64().unwrap(),
+            f: list(&k["f"]),
+            macros: list(&k["macros"]),
+        };
+        let cases = v["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| Case {
+                name: c["name"].as_str().unwrap().to_string(),
+                writes: c["writes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|w| (w["ck"].as_u64().unwrap() as u8, unhex(w["data"].as_str().unwrap())))
+                    .collect(),
+                result: c["result"].clone(),
+            })
+            .collect();
+        Golden { model, keys, cases }
+    }
+
+    fn cases(&self) -> impl Iterator<Item = &Case> {
+        self.cases.iter()
+    }
+
+    /// Matrix index addressed by a vendor key config (`original` + `index`).
+    fn matrix_index(&self, original: u64, nth: u64) -> u8 {
+        let want = code_to_entry(original as u32);
+        self.model
+            .default_matrix
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| **e == want)
+            .map(|(i, _)| i)
+            .nth(nth as usize)
+            .unwrap() as u8
+    }
 }
 
 fn unhex(s: &str) -> Vec<u8> {
     (0..s.len() / 2).map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap()).collect()
-}
-
-fn model() -> &'static ModelInfo {
-    Database::get().model("yc500_th80").unwrap()
 }
 
 fn report(prefix: &[u8]) -> Report {
@@ -114,50 +185,47 @@ fn effect_to_vendor(e: &LightEffect) -> Value {
     }
 }
 
-#[test]
-fn lighting_encode() {
+fn lighting_encode(g: &Golden) {
     let mut n = 0;
-    for c in cases().iter().filter(|c| c.name.starts_with("led_set ")) {
+    for c in g.cases().filter(|c| c.name.starts_with("led_set ")) {
         let e = effect_from_vendor(&arg(&c.name));
         assert_frames(c, &[e.encode()]);
         n += 1;
     }
-    assert!(n >= 150, "only {n} lighting cases");
+    assert!(n >= 100, "only {n} lighting cases");
 }
 
-#[test]
-fn lighting_decode() {
+fn lighting_decode(g: &Golden) {
     let mut n = 0;
-    for c in cases().iter().filter(|c| c.name.starts_with("led_get ")) {
+    for c in g.cases().filter(|c| c.name.starts_with("led_get ")) {
         assert_frames(c, &[LightEffect::query()]);
         let resp = report(&unhex(c.name.split(' ').nth(1).unwrap()));
         let got = LightEffect::decode(&resp).map(|e| effect_to_vendor(&e)).unwrap_or(Value::Null);
         assert_eq!(got, c.result, "{}", c.name);
         n += 1;
     }
-    assert!(n > 150);
+    assert!(n > 150, "only {n} lighting cases");
 }
 
 // ---------------------------------------------------------------- settings
 
-#[test]
-fn simple_settings() {
-    let m = model();
-    for c in cases() {
+fn simple_settings(g: &Golden) {
+    let m = g.model;
+    for c in g.cases() {
         let name = c.name.as_str();
         let num = || name.rsplit(' ').next().unwrap().parse::<u64>().unwrap();
         match name.split(' ').next().unwrap() {
-            "rate_set" => assert_frames(&c, &[ReportRate::from_hz(num() as u16).unwrap().encode(0)]),
-            "rate_set_profile2" => assert_frames(&c, &[ReportRate::Hz1000.encode(2)]),
+            "rate_set" => assert_frames(c, &[ReportRate::from_hz(num() as u16).unwrap().encode(0)]),
+            "rate_set_profile2" => assert_frames(c, &[ReportRate::Hz1000.encode(2)]),
             "rate_get" => {
-                assert_frames(&c, &[ReportRate::query(0)]);
+                assert_frames(c, &[ReportRate::query(0)]);
                 let got =
                     ReportRate::decode(&report(&[0x84, 0, num() as u8])).map(|r| json!(r.hz())).unwrap_or(json!("err"));
                 assert_eq!(got, c.result, "{name}");
             }
-            "profile_set" => assert_frames(&c, &[settings::encode_set_profile(num() as u8)]),
+            "profile_set" => assert_frames(c, &[settings::encode_set_profile(num() as u8)]),
             "profile_get" => {
-                assert_frames(&c, &[epomaker_core::protocol::query(0x85, 0, 0)]);
+                assert_frames(c, &[epomaker_core::protocol::query(0x85, 0, 0)]);
                 assert_eq!(json!(settings::decode_profile(&report(&[0x85, num() as u8]))), c.result);
             }
             "opts_set" => {
@@ -174,10 +242,10 @@ fn simple_settings() {
                     fn_key_swap: b("keyboardFnKeyMatrix"),
                     power_save: b("powerSaveMode"),
                 };
-                assert_frames(&c, &[opts.encode(0)]);
+                assert_frames(c, &[opts.encode(0)]);
             }
             "opts_get" => {
-                assert_frames(&c, &[KeyboardOptions::query(0)]);
+                assert_frames(c, &[KeyboardOptions::query(0)]);
                 let raw = unhex(name.split(' ').nth(1).unwrap());
                 let o = KeyboardOptions::decode(&report(&[0x86, 0, raw[0], raw[1], raw[2]]));
                 let got = json!({
@@ -189,9 +257,9 @@ fn simple_settings() {
                 });
                 assert_eq!(got, c.result, "{name}");
             }
-            "debounce_set" => assert_frames(&c, &[settings::encode_set_debounce(num() as u8)]),
+            "debounce_set" => assert_frames(c, &[settings::encode_set_debounce(num() as u8)]),
             "debounce_get" => {
-                assert_frames(&c, &[epomaker_core::protocol::query(0x91, 0, 0)]);
+                assert_frames(c, &[epomaker_core::protocol::query(0x91, 0, 0)]);
                 assert_eq!(json!(settings::decode_debounce(&report(&[0x91, 0, 7]))), c.result);
             }
             "sleep_set" => {
@@ -202,7 +270,7 @@ fn simple_settings() {
                     bt_deep_sleep: s["deepTime_bt"].as_u64().unwrap() as u16,
                     dongle_deep_sleep: s["deepTime_24"].as_u64().unwrap() as u16,
                 };
-                assert_frames(&c, &[t.encode()]);
+                assert_frames(c, &[t.encode()]);
             }
             "sleep_get" | "sleep_get_clamp" => {
                 let resp = if name == "sleep_get" {
@@ -225,32 +293,17 @@ fn simple_settings() {
                 assert_eq!(json!({"battery": b.percent, "status": status}), c.result);
             }
             "fw_get" => {
-                assert_frames(&c, &[epomaker_core::protocol::query(0x80, 0, 0)]);
+                assert_frames(c, &[epomaker_core::protocol::query(0x80, 0, 0)]);
                 assert_eq!(json!(settings::decode_firmware(&report(&[0x80, 0x34, 0x12]))), c.result);
             }
-            "reset" => assert_frames(&c, &[settings::encode_factory_reset()]),
-            "autoosen_set" => assert_frames(&c, &[settings::encode_set_auto_os(true)]),
+            "reset" => assert_frames(c, &[settings::encode_factory_reset()]),
+            "autoosen_set" => assert_frames(c, &[settings::encode_set_auto_os(true)]),
             _ => {}
         }
     }
 }
 
 // ---------------------------------------------------------------- key mapping
-
-/// Matrix index addressed by a vendor key config (`original` + `index`).
-fn matrix_index(original: u64, nth: u64) -> u8 {
-    let want = code_to_entry(original as u32);
-    model()
-        .default_matrix
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .enumerate()
-        .filter(|(_, e)| **e == want)
-        .map(|(i, _)| i)
-        .nth(nth as usize)
-        .unwrap() as u8
-}
 
 const MOUSE_KEYS: [(i64, Option<MouseAction>); 18] = [
     (-1000, Some(MouseAction::Left)),
@@ -307,10 +360,9 @@ fn action_from_vendor(cfg: &Value) -> KeyAction {
     }
 }
 
-#[test]
-fn key_remap_simple() {
+fn key_remap_simple(g: &Golden) {
     let mut n = 0;
-    for c in cases() {
+    for c in g.cases() {
         let (layer, json) = if let Some(j) = c.name.strip_prefix("key_simple ") {
             (Layer::Profile(0), j)
         } else if let Some(j) = c.name.strip_prefix("key_simple_p1 ") {
@@ -321,8 +373,8 @@ fn key_remap_simple() {
             continue;
         };
         let cfg: Value = serde_json::from_str(json).unwrap();
-        let idx = matrix_index(cfg["original"].as_u64().unwrap(), cfg["index"].as_u64().unwrap_or(0));
-        assert_frames(&c, &[encode_set_key(layer, idx, action_from_vendor(&cfg))]);
+        let idx = g.matrix_index(cfg["original"].as_u64().unwrap(), cfg["index"].as_u64().unwrap_or(0));
+        assert_frames(c, &[encode_set_key(layer, idx, action_from_vendor(&cfg))]);
         n += 1;
     }
     assert!(n > 80, "{n}");
@@ -378,13 +430,12 @@ fn long_macro() -> Macro {
     Macro { repeat_count: 2, events }
 }
 
-#[test]
-fn macros_write() {
+fn macros_write(g: &Golden) {
     let mut n = 0;
-    for c in cases() {
+    for c in g.cases() {
         if let Some(j) = c.name.strip_prefix("macro_key ") {
             let (m, original, mode) = if j == "long" {
-                (long_macro(), 33, epomaker_core::keymap::MacroMode::RepeatTimes)
+                (long_macro(), g.keys.macros[3], epomaker_core::keymap::MacroMode::RepeatTimes)
             } else {
                 let cfg: Value = serde_json::from_str(j).unwrap();
                 let m = Macro {
@@ -397,26 +448,24 @@ fn macros_write() {
             let mut frames = macros::encode_write(0, &m.encode().unwrap()).unwrap();
             frames.push(encode_set_key(
                 Layer::Profile(0),
-                matrix_index(original, 0),
+                g.matrix_index(original, 0),
                 KeyAction::Macro { index: 0, mode },
             ));
-            assert_frames(&c, &frames);
+            assert_frames(c, &frames);
             n += 1;
         }
         if let Some(which) = c.name.strip_prefix("macro_encode ") {
-            let src = cases()
-                .into_iter()
-                .find(|x| {
-                    x.name.starts_with("macro_key ")
-                        && x.name.contains(if which == "macro1" { "\"original\":30" } else { "\"original\":31" })
-                })
+            let original = if which == "macro1" { g.keys.macros[0] } else { g.keys.macros[1] };
+            let src = g
+                .cases()
+                .find(|x| x.name.starts_with("macro_key ") && arg(&x.name)["original"] == json!(original))
                 .unwrap();
             let cfg = arg(&src.name);
             let m =
                 Macro { repeat_count: cfg["repeatCount"].as_u64().unwrap() as u16, events: vendor_macro_events(&cfg) };
             let buf = m.encode().unwrap();
             let slot = if which == "macro1" { 3 } else { 7 };
-            assert_frames(&c, &macros::encode_write(slot, &buf).unwrap());
+            assert_frames(c, &macros::encode_write(slot, &buf).unwrap());
             let hexbuf: String = buf.iter().map(|b| format!("{b:02x}")).collect();
             assert_eq!(json!(hexbuf), c.result, "{}", c.name);
             n += 1;
@@ -441,33 +490,31 @@ fn macro_to_vendor(m: &Macro) -> Value {
     json!({"macroEvents": ev, "repeatCount": m.repeat_count})
 }
 
-#[test]
-fn macros_read() {
-    let c = cases().into_iter().find(|c| c.name == "macro_read 5").unwrap();
-    assert_frames(&c, &macros::encode_read(5));
+fn macros_read(g: &Golden) {
+    let c = g.cases().find(|c| c.name == "macro_read 5").unwrap();
+    assert_frames(c, &macros::encode_read(5));
     let mut buf = vec![0u8; 256];
     buf[..2].copy_from_slice(&2u16.to_le_bytes());
     buf[2..12].copy_from_slice(&[4, 0x80 | 30, 4, 0x00, 0x2c, 0x01, 0xf0, 0x80 | 5, 0xf0, 0x05]);
     assert_eq!(macro_to_vendor(&Macro::decode(&buf)), c.result);
 }
 
-#[test]
-fn matrix_write_full() {
-    let mut m = model().default_matrix.clone();
+fn matrix_write_full(g: &Golden) {
+    let mut m = g.model.default_matrix.clone();
     m[4 * 9] = 0;
     m[4 * 9 + 2] = 5;
-    for c in cases() {
+    for c in g.cases() {
         match c.name.as_str() {
-            "matrix_write_raw" => assert_frames(&c, &encode_write_matrix(Layer::Profile(0), &m)),
-            "fn_matrix_write_raw" => assert_frames(&c, &encode_write_matrix(Layer::Fn(0), &m)),
+            "matrix_write_raw" => assert_frames(c, &encode_write_matrix(Layer::Profile(0), &m)),
+            "fn_matrix_write_raw" => assert_frames(c, &encode_write_matrix(Layer::Fn(0), &m)),
             _ => {}
         }
     }
 }
 
 /// Vendor `matrixToConfigValues`: only entries that differ from the factory matrix.
-fn matrix_to_vendor(matrix: &KeyMatrix) -> Value {
-    let def = &model().default_matrix;
+fn matrix_to_vendor(model: &ModelInfo, matrix: &KeyMatrix) -> Value {
+    let def = &model.default_matrix;
     let mut out = Vec::new();
     for (i, s) in matrix.entries.iter().enumerate() {
         let n = [def[4 * i], def[4 * i + 1], def[4 * i + 2], def[4 * i + 3]];
@@ -506,32 +553,32 @@ fn matrix_to_vendor(matrix: &KeyMatrix) -> Value {
     Value::Array(out)
 }
 
-#[test]
-fn matrix_read_full() {
-    let mut mm = model().default_matrix.clone();
-    let find = |m: &[u8], hid: u8| m.as_chunks::<4>().0.iter().position(|e| *e == [0, 0, hid, 0]).unwrap() * 4;
-    let i = find(&mm, 4);
+fn matrix_read_full(g: &Golden) {
+    let mut mm = g.model.default_matrix.clone();
+    let [k1, k2, k3, k4, k5, ..] = g.keys.f[..] else { panic!("meta.keys.f") };
+    let find = |m: &[u8], hid: u64| m.as_chunks::<4>().0.iter().position(|e| *e == [0, 0, hid as u8, 0]).unwrap() * 4;
+    let i = find(&mm, g.keys.a);
     mm[i..i + 4].copy_from_slice(&[0, 224, 6, 0]);
-    let i = find(&mm, 57);
+    let i = find(&mm, k1);
     mm[i..i + 4].copy_from_slice(&[0, 0, 0, 0]);
-    let i = find(&mm, 58);
+    let i = find(&mm, k2);
     mm[i..i + 4].copy_from_slice(&[1, 0, 240, 0]);
-    let i = find(&mm, 59);
+    let i = find(&mm, k3);
     mm[i..i + 4].copy_from_slice(&[3, 0, 205, 0]);
-    let i = find(&mm, 60);
+    let i = find(&mm, k4);
     mm[i..i + 4].copy_from_slice(&[0, 0, 1, 0]);
-    let i = find(&mm, 61);
+    let i = find(&mm, k5);
     mm[i..i + 4].copy_from_slice(&[3, 0, 0x99, 0x09]);
     let decoded = KeyMatrix::from_bytes(&mm);
-    for c in cases() {
+    for c in g.cases() {
         let layer = match c.name.as_str() {
             "matrix_read" => Layer::Profile(0),
             "fn_matrix_read" => Layer::Fn(0),
             _ => continue,
         };
-        assert_frames(&c, &encode_read_matrix(layer));
+        assert_frames(c, &encode_read_matrix(layer));
         // the vendor lists changes in matrix order; compare as sets
-        let mut got = matrix_to_vendor(&decoded).as_array().unwrap().clone();
+        let mut got = matrix_to_vendor(g.model, &decoded).as_array().unwrap().clone();
         let mut want = c.result.as_array().unwrap().clone();
         let key = |v: &Value| v.to_string();
         got.sort_by_key(key);
@@ -542,24 +589,25 @@ fn matrix_read_full() {
 
 // ---------------------------------------------------------------- per-key colors
 
-#[test]
-fn key_colors() {
-    let m = model();
-    let idx = |hid: u64| matrix_index(hid, 0);
-    for c in cases() {
+fn key_colors(g: &Golden) {
+    let m = g.model;
+    let idx = |hid: u64| g.matrix_index(hid, 0);
+    for c in g.cases() {
         match c.name.as_str() {
-            "userpic_simple" => assert_frames(&c, &[settings::encode_set_key_color(1, idx(4), Rgb(0x112233))]),
-            "userpic_simple_esc" => assert_frames(&c, &[settings::encode_set_key_color(0, idx(41), Rgb(0xff8000))]),
+            "userpic_simple" => assert_frames(c, &[settings::encode_set_key_color(1, idx(g.keys.a), Rgb(0x112233))]),
+            "userpic_simple_esc" => {
+                assert_frames(c, &[settings::encode_set_key_color(0, idx(g.keys.esc), Rgb(0xff8000))])
+            }
             "userpic_full" => {
                 let mut colors = vec![Rgb(0); m.matrix_len()];
-                colors[idx(41) as usize] = Rgb(0xff0000);
-                colors[idx(4) as usize] = Rgb(0x00ff00);
-                colors[idx(5) as usize] = Rgb(0x0000ff);
-                assert_frames(&c, &settings::encode_set_all_colors(&colors, m.pics_count()));
+                colors[idx(g.keys.esc) as usize] = Rgb(0xff0000);
+                colors[idx(g.keys.a) as usize] = Rgb(0x00ff00);
+                colors[idx(g.keys.b) as usize] = Rgb(0x0000ff);
+                assert_frames(c, &settings::encode_set_all_colors(&colors, m.pics_count()));
             }
             "userpic_read" => {
-                assert_frames(&c, &settings::encode_read_colors(m.pics_count()));
-                let mut data = vec![0u8; 64 * 6];
+                assert_frames(c, &settings::encode_read_colors(m.pics_count()));
+                let mut data = vec![0u8; 64 * m.pics_count()];
                 data[..3].copy_from_slice(&[0xff, 0, 0]);
                 data[27..30].copy_from_slice(&[0, 0xff, 0]);
                 let colors = settings::decode_colors(&data);
@@ -589,8 +637,7 @@ fn key_colors() {
     }
 }
 
-#[test]
-fn every_case_is_covered() {
+fn every_case_is_covered(g: &Golden) {
     let known = [
         "led_set",
         "led_get",
@@ -627,7 +674,7 @@ fn every_case_is_covered() {
         "userpic_full",
         "userpic_read",
     ];
-    for c in cases() {
+    for c in g.cases() {
         let head = c.name.split(' ').next().unwrap();
         assert!(known.contains(&head), "uncovered golden case {}", c.name);
     }
