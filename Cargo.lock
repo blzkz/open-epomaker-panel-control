@@ -1372,6 +1372,7 @@ version = "0.2.0"
 dependencies = [
  "cpal",
  "epomaker-core",
+ "libc",
  "log",
  "serde",
  "thiserror 2.0.21",

@@ -5,6 +5,8 @@
 pub mod audio;
 pub mod cpu;
 pub mod screen;
+#[cfg(target_os = "linux")]
+pub mod screen_portal;
 pub mod stream;
 pub mod window;
 

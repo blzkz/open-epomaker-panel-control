@@ -2,8 +2,7 @@
 //!
 //! * Windows: GDI half-tone scaling of the primary screen to one pixel.
 //! * Linux X11: samples a few full-width rows of the root window.
-//! * Linux Wayland: not available (compositors only allow capture through the
-//!   screencast portal); the X11 path would only see XWayland windows.
+//! * Linux Wayland: the xdg-desktop-portal ScreenCast interface (see `screen_portal`).
 
 use crate::HostError;
 use epomaker_core::lighting::Rgb;
@@ -36,7 +35,7 @@ mod imp {
 
     pub fn sampler() -> Result<Box<dyn ScreenSampler>, HostError> {
         if std::env::var_os("WAYLAND_DISPLAY").is_some() && std::env::var_os("EPOMAKER_FORCE_X11_CAPTURE").is_none() {
-            return Err(HostError::Unsupported("screen capture on Wayland (use an X11 session)"));
+            return Ok(Box::new(crate::screen_portal::sampler()?));
         }
         let (conn, screen) = x11rb::connect(None).map_err(|e| HostError::Screen(e.to_string()))?;
         let s = &conn.setup().roots[screen];
