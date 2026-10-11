@@ -12,7 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 epomaker-core = { workspace = true }
-eframe = { workspace = true }
+eframe = { workspace = true, features = ["persistence"] }
 env_logger = { workspace = true }
 log = { workspace = true }
 serde = { workspace = true }

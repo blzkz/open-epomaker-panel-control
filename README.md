@@ -89,6 +89,8 @@ packaging/linux/install.sh
 
 Or only the rule: `sudo cp packaging/linux/70-epomaker.rules /etc/udev/rules.d/`, then
 replug the keyboard.
+When the GUI cannot open the keyboard because of permissions, it offers to install the
+rule for you (through `pkexec`, which asks for your password).
 
 ### Windows
 
@@ -100,8 +102,19 @@ first so both programs don't talk to the keyboard at the same time.
 ### GUI
 
 Run `epomaker-panel`, pick your keyboard (or a **demo keyboard**) and click *Connect*.
-The tabs are Lighting, Key mapping, Per-key colors, Macros, Settings and Backup. The
-interface is in English or Spanish.
+The tabs are:
+
+- **Lighting**: pick an effect from the cards and watch an animated preview on the
+  keyboard drawing before (or while) it is applied.
+- **Key mapping**: click a key (the rotary knob is drawn as a dial with -, press and +
+  zones), then choose its new action in a searchable picker grouped by category.
+- **Per-key colors**: paint keys, select boxes or rows, fill them or apply a gradient,
+  and pick which of the three custom pictures you edit. The bulk "Write all" always
+  targets picture 1, like the vendor app; pictures 2 and 3 are written key by key.
+- **Macros**, **Settings** and **Backup**.
+
+The *Preferences* menu switches between English and Spanish, light/dark/system theme and
+the interface size. These settings, the window size and the last keyboard are remembered.
 
 ### CLI
 
