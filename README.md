@@ -28,9 +28,25 @@ the **TH80** (TH80, TH80 Pro, TH80 SE, TH80 X and TH80 UK).
 Not implemented on purpose: firmware updates, TH80 X screen uploads, and music/screen
 "follow" effects (those need the PC to stream data).
 
-## Install
+## Download
 
-### Build from source
+Ready-made packages are attached to every [GitHub release](https://github.com/blzkz/open-epomaker-panel-control/releases):
+
+| System | Package |
+|---|---|
+| Windows 10/11 | `open-epomaker-panel-windows-x86_64.zip`: unzip and run `epomaker-panel.exe` |
+| Debian, Ubuntu, Mint, Pop!_OS | `.deb`: `sudo apt install ./open-epomaker-panel_*_amd64.deb` |
+| Fedora, RHEL, openSUSE | `.rpm`: `sudo dnf install ./open-epomaker-panel-*.x86_64.rpm` (or `zypper install`) |
+| Arch, Manjaro, EndeavourOS, CachyOS | `.pkg.tar.zst`: `sudo pacman -U open-epomaker-panel-*.pkg.tar.zst`, or build `packaging/arch/PKGBUILD` |
+| Any Linux | `open-epomaker-panel-x86_64.AppImage` (portable) or the `.tar.gz` with `linux/install.sh` |
+
+The deb, rpm and Arch packages also install the udev rule that gives your user access to
+the keyboard. With the AppImage, install `packaging/linux/70-epomaker.rules` yourself (see
+below). Linux builds need glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+, Fedora 36+…).
+
+## Build from source
+
+### Compile
 
 You need Rust ≥ 1.88. On Linux you also need `libudev` development files (Debian/Ubuntu:
 `sudo apt install libudev-dev libxkbcommon-dev libgl1-mesa-dev libwayland-dev`).
@@ -41,7 +57,7 @@ cargo build --release
 
 This builds `target/release/epomaker-panel` (GUI) and `target/release/epomaker` (CLI).
 
-### Linux permissions
+### Linux permissions (only when not using a package)
 
 Regular users cannot open HID devices by default. Install the udev rule (and the
 binaries and desktop entry) with:

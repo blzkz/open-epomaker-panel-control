@@ -22,6 +22,21 @@ en Rust. Sustituye al «EPOMAKER Driver» oficial. La primera familia soportada 
 - Modo demo con un teclado emulado, sin necesidad de hardware.
 - Interfaz gráfica (español o inglés) y herramienta de línea de comandos.
 
+## Descargar
+
+Cada [release en GitHub](https://github.com/blzkz/open-epomaker-panel-control/releases) incluye paquetes listos:
+
+| Sistema | Paquete |
+|---|---|
+| Windows 10/11 | `open-epomaker-panel-windows-x86_64.zip`: descomprime y ejecuta `epomaker-panel.exe` |
+| Debian, Ubuntu, Mint, Pop!_OS | `.deb`: `sudo apt install ./open-epomaker-panel_*_amd64.deb` |
+| Fedora, RHEL, openSUSE | `.rpm`: `sudo dnf install ./open-epomaker-panel-*.x86_64.rpm` (o `zypper install`) |
+| Arch, Manjaro, EndeavourOS, CachyOS | `.pkg.tar.zst`: `sudo pacman -U open-epomaker-panel-*.pkg.tar.zst` |
+| Cualquier Linux | `open-epomaker-panel-x86_64.AppImage` (portable) o el `.tar.gz` con `linux/install.sh` |
+
+Los paquetes deb, rpm y de Arch instalan también la regla udev que da acceso al teclado sin root.
+Con el AppImage tienes que instalar tú `packaging/linux/70-epomaker.rules`.
+
 ## Compilar
 
 Necesitas Rust 1.88 o superior. En Linux necesitas además las cabeceras de libudev

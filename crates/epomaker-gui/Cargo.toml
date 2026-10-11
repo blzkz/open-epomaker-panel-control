@@ -17,6 +17,50 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 png = { version = "0.18", optional = true }
 
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
 [features]
 # Development aid: `EPOMAKER_AUTOSHOT=<dir>` renders every tab of the demo keyboard to PNG files.
 autoshot = ["dep:png"]
+
+# ---- Linux packages (cargo deb -p epomaker-gui / cargo generate-rpm -p crates/epomaker-gui) ----
+
+[package.metadata.deb]
+name = "open-epomaker-panel"
+maintainer = "blzkz <sergiobl88@gmail.com>"
+copyright = "blzkz"
+section = "utils"
+priority = "optional"
+depends = "$auto"
+extended-description = """\
+Open-source control panel for EPOMAKER keyboards (TH80 family): lighting effects, \
+per-key RGB, key remapping, macros, profiles and settings. Includes the GUI \
+(epomaker-panel), the command line tool (epomaker) and a udev rule that lets \
+desktop users access the keyboard without root."""
+maintainer-scripts = "../../packaging/linux/debian"
+assets = [
+    ["target/release/epomaker-panel", "usr/bin/", "755"],
+    ["target/release/epomaker", "usr/bin/", "755"],
+    ["../../packaging/linux/70-epomaker.rules", "usr/lib/udev/rules.d/", "644"],
+    ["../../packaging/linux/open-epomaker-panel.desktop", "usr/share/applications/", "644"],
+    ["../../packaging/icons/open-epomaker-panel.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["../../packaging/icons/open-epomaker-panel.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
+    ["../../README.md", "usr/share/doc/open-epomaker-panel/", "644"],
+]
+
+[package.metadata.generate-rpm]
+name = "open-epomaker-panel"
+summary = "Open control panel for EPOMAKER keyboards"
+license = "LicenseRef-Unspecified"
+url = "https://github.com/blzkz/open-epomaker-panel-control"
+post_install_script = "udevadm control --reload-rules >/dev/null 2>&1 || :\nudevadm trigger --subsystem-match=hidraw >/dev/null 2>&1 || :"
+assets = [
+    { source = "target/release/epomaker-panel", dest = "/usr/bin/epomaker-panel", mode = "755" },
+    { source = "target/release/epomaker", dest = "/usr/bin/epomaker", mode = "755" },
+    { source = "../../packaging/linux/70-epomaker.rules", dest = "/usr/lib/udev/rules.d/70-epomaker.rules", mode = "644" },
+    { source = "../../packaging/linux/open-epomaker-panel.desktop", dest = "/usr/share/applications/open-epomaker-panel.desktop", mode = "644" },
+    { source = "../../packaging/icons/open-epomaker-panel.svg", dest = "/usr/share/icons/hicolor/scalable/apps/open-epomaker-panel.svg", mode = "644" },
+    { source = "../../packaging/icons/open-epomaker-panel.png", dest = "/usr/share/icons/hicolor/256x256/apps/open-epomaker-panel.png", mode = "644" },
+    { source = "../../README.md", dest = "/usr/share/doc/open-epomaker-panel/README.md", mode = "644", doc = true },
+]

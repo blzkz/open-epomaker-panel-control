@@ -1,0 +1,49 @@
+# Maintainer: blzkz
+pkgname=open-epomaker-panel
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Open-source control panel for EPOMAKER keyboards (TH80 family)"
+arch=('x86_64')
+url="https://github.com/blzkz/open-epomaker-panel-control"
+license=('LicenseRef-Unspecified')
+depends=('gcc-libs' 'glibc' 'systemd-libs' 'libxkbcommon' 'libglvnd' 'hicolor-icon-theme')
+optdepends=('wayland: Wayland sessions'
+            'libx11: X11 sessions'
+            'libxcursor: X11 sessions'
+            'libxrandr: X11 sessions'
+            'libxi: X11 sessions')
+makedepends=('cargo')
+options=('!lto' '!debug')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+_srcdir() { echo "$srcdir/open-epomaker-panel-control-$pkgver"; }
+
+prepare() {
+  cd "$(_srcdir)"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$(_srcdir)"
+  export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
+  cargo build --frozen --release -p epomaker-cli -p epomaker-gui
+}
+
+check() {
+  cd "$(_srcdir)"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo test --frozen -p epomaker-core
+}
+
+package() {
+  cd "$(_srcdir)"
+  install -Dm755 target/release/epomaker-panel "$pkgdir/usr/bin/epomaker-panel"
+  install -Dm755 target/release/epomaker "$pkgdir/usr/bin/epomaker"
+  install -Dm644 packaging/linux/70-epomaker.rules "$pkgdir/usr/lib/udev/rules.d/70-epomaker.rules"
+  install -Dm644 packaging/linux/open-epomaker-panel.desktop "$pkgdir/usr/share/applications/open-epomaker-panel.desktop"
+  install -Dm644 packaging/icons/open-epomaker-panel.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/open-epomaker-panel.svg"
+  install -Dm644 packaging/icons/open-epomaker-panel.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/open-epomaker-panel.png"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}
