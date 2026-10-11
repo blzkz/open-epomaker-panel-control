@@ -2,7 +2,8 @@
 
 use crate::hidmap::hid_from_key;
 use crate::i18n::{tr, Lang};
-use eframe::egui::{self, ComboBox, DragValue, Event};
+use crate::picker::{key_button, picker_ui, Category, Pick, PickerState};
+use eframe::egui::{self, ComboBox, DragValue, Event, RichText, Vec2};
 use epomaker_core::keycodes;
 use epomaker_core::keymap::{KeyAction, MacroMode, Modifier, MouseAction, SpecialFn};
 use epomaker_core::macros::{Macro, MacroEvent};
@@ -16,22 +17,6 @@ pub enum Kind {
     Function,
     Macro,
     Raw,
-}
-
-impl Kind {
-    const ALL: [Kind; 7] =
-        [Kind::Default, Kind::Disabled, Kind::Key, Kind::Mouse, Kind::Function, Kind::Macro, Kind::Raw];
-    fn label(self) -> &'static str {
-        match self {
-            Kind::Default => "Factory default",
-            Kind::Disabled => "Disabled",
-            Kind::Key => "Key",
-            Kind::Mouse => "Mouse",
-            Kind::Function => "Function",
-            Kind::Macro => "Macro",
-            Kind::Raw => "Raw",
-        }
-    }
 }
 
 /// Which key field is waiting for a physical key press.
@@ -53,6 +38,7 @@ pub struct ActionEditor {
     mode: MacroMode,
     raw: String,
     capture: Capture,
+    picker: PickerState,
 }
 
 impl ActionEditor {
@@ -68,32 +54,43 @@ impl ActionEditor {
             mode: MacroMode::RepeatTimes,
             raw: hex4(action.to_bytes()),
             capture: Capture::None,
+            picker: PickerState::new(Category::Letters),
         };
-        if action.to_bytes() == default {
-            return e;
+        if action.to_bytes() != default {
+            match action {
+                KeyAction::Disabled => e.kind = Kind::Disabled,
+                KeyAction::Key { modifier, key, key2 } => {
+                    e.kind = Kind::Key;
+                    e.modifier = modifier;
+                    e.key = key;
+                    e.key2 = key2;
+                }
+                KeyAction::Mouse(m) => {
+                    e.kind = Kind::Mouse;
+                    e.mouse = m;
+                }
+                KeyAction::Function(f) => {
+                    e.kind = Kind::Function;
+                    e.func = f;
+                }
+                KeyAction::Macro { index, mode } => {
+                    e.kind = Kind::Macro;
+                    e.slot = index;
+                    e.mode = mode;
+                }
+                KeyAction::Raw(_) => e.kind = Kind::Raw,
+            }
         }
-        match action {
-            KeyAction::Disabled => e.kind = Kind::Disabled,
-            KeyAction::Key { modifier, key, key2 } => {
-                e.kind = Kind::Key;
-                e.modifier = modifier;
-                e.key = key;
-                e.key2 = key2;
-            }
-            KeyAction::Mouse(m) => {
-                e.kind = Kind::Mouse;
-                e.mouse = m;
-            }
-            KeyAction::Function(f) => {
-                e.kind = Kind::Function;
-                e.func = f;
-            }
-            KeyAction::Macro { index, mode } => {
-                e.kind = Kind::Macro;
-                e.slot = index;
-                e.mode = mode;
-            }
-            KeyAction::Raw(_) => e.kind = Kind::Raw,
+        // open the picker on the category of what the key does now
+        let shown = match KeyAction::from_bytes(action.to_bytes()) {
+            KeyAction::Key { key, .. } => Some(Pick::Key(key)),
+            KeyAction::Mouse(m) => Some(Pick::Mouse(m)),
+            KeyAction::Function(f) => Some(Pick::Func(f)),
+            KeyAction::Macro { index, .. } => Some(Pick::Macro(index)),
+            _ => None,
+        };
+        if let Some(p) = shown {
+            e.picker.category = Category::of(p);
         }
         e
     }
@@ -110,93 +107,158 @@ impl ActionEditor {
         })
     }
 
+    #[cfg(feature = "autoshot")]
+    pub fn set_search(&mut self, q: &str) {
+        self.picker.search = q.to_string();
+    }
+
+    /// The item highlighted in the picker.
+    fn selected(&self) -> Option<Pick> {
+        match self.kind {
+            Kind::Key => Some(Pick::Key(self.key)),
+            Kind::Mouse => Some(Pick::Mouse(self.mouse)),
+            Kind::Function => Some(Pick::Func(self.func)),
+            Kind::Macro => Some(Pick::Macro(self.slot)),
+            _ => None,
+        }
+    }
+
     /// Draws the editor. Returns true when the user asked to apply.
-    pub fn ui(&mut self, ui: &mut egui::Ui, lang: Lang, macro_slots: u8, used_slots: &[u8]) -> bool {
+    pub fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        lang: Lang,
+        macro_slots: u8,
+        used_slots: &[u8],
+        default: [u8; 4],
+        enabled: bool,
+    ) -> bool {
         let t = |s| tr(lang, s);
         self.handle_capture(ui);
-        egui::Grid::new("action_editor").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-            ui.label(t("Action"));
-            ComboBox::from_id_salt("kind").selected_text(t(self.kind.label())).show_ui(ui, |ui| {
-                for k in Kind::ALL {
-                    ui.selectable_value(&mut self.kind, k, t(k.label()));
+        let mut apply = false;
+        ui.horizontal(|ui| {
+            if ui.add(egui::Button::selectable(self.kind == Kind::Default, t("Factory default"))).clicked() {
+                self.kind = Kind::Default;
+            }
+            if ui.add(egui::Button::selectable(self.kind == Kind::Disabled, t("Disabled"))).clicked() {
+                self.kind = Kind::Disabled;
+            }
+            ui.separator();
+            ui.label(t("New action:"));
+            let preview = match self.kind {
+                Kind::Default => {
+                    format!("{} ({})", t("Factory default"), describe(KeyAction::from_bytes(default), lang))
+                }
+                _ => self.action(default).map(|a| describe(a, lang)).unwrap_or_else(|| "?".into()),
+            };
+            ui.label(RichText::new(preview).strong());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let ok = self.action(default).is_some();
+                let b = egui::Button::new(RichText::new(t("Apply")).strong()).min_size(Vec2::new(90.0, 0.0));
+                apply = ui.add_enabled(enabled && ok, b).clicked();
+            });
+        });
+        ui.separator();
+        let height = (ui.available_height() - 8.0).max(120.0);
+        ui.horizontal_top(|ui| {
+            let details_w = 270.0;
+            ui.allocate_ui(Vec2::new((ui.available_width() - details_w - 12.0).max(300.0), height), |ui| {
+                let sel = self.selected();
+                if let Some(p) = picker_ui(ui, lang, &mut self.picker, &Category::ALL, macro_slots, sel, height - 34.0)
+                {
+                    match p {
+                        Pick::Key(k) => {
+                            if self.kind != Kind::Key {
+                                self.modifier = Modifier::None;
+                                self.key2 = 0;
+                            }
+                            self.kind = Kind::Key;
+                            self.key = k;
+                        }
+                        Pick::Mouse(m) => {
+                            self.kind = Kind::Mouse;
+                            self.mouse = m;
+                        }
+                        Pick::Func(f) => {
+                            self.kind = Kind::Function;
+                            self.func = f;
+                        }
+                        Pick::Macro(s) => {
+                            self.kind = Kind::Macro;
+                            self.slot = s;
+                        }
+                    }
                 }
             });
-            ui.end_row();
-            match self.kind {
-                Kind::Key => {
-                    ui.label(t("Modifier"));
-                    ComboBox::from_id_salt("modifier").selected_text(self.modifier.label()).show_ui(ui, |ui| {
-                        for m in Modifier::ALL {
-                            ui.selectable_value(&mut self.modifier, m, m.label());
-                        }
-                    });
-                    ui.end_row();
-                    ui.label(t("Key"));
-                    ui.horizontal(|ui| {
-                        key_combo(ui, "key", &mut self.key, false);
-                        let label = if self.capture == Capture::Key { t("Press a key…") } else { t("Capture") };
-                        if ui.button(label).clicked() {
-                            self.capture = Capture::Key;
-                        }
-                    });
-                    ui.end_row();
-                    ui.label(t("Second key"));
-                    ui.horizontal(|ui| {
-                        key_combo(ui, "key2", &mut self.key2, true);
-                        let label = if self.capture == Capture::Key2 { t("Press a key…") } else { t("Capture") };
-                        if ui.button(label).clicked() {
-                            self.capture = Capture::Key2;
-                        }
-                    });
-                    ui.end_row();
-                }
-                Kind::Mouse => {
-                    ui.label(t("Mouse"));
-                    ComboBox::from_id_salt("mouse").selected_text(self.mouse.label()).show_ui(ui, |ui| {
-                        for m in MouseAction::ALL {
-                            ui.selectable_value(&mut self.mouse, m, m.label());
-                        }
-                    });
-                    ui.end_row();
-                }
-                Kind::Function => {
-                    ui.label(t("Function"));
-                    ComboBox::from_id_salt("func").selected_text(self.func.label()).height(400.0).show_ui(ui, |ui| {
-                        for f in SpecialFn::ALL {
-                            ui.selectable_value(&mut self.func, f, f.label());
-                        }
-                    });
-                    ui.end_row();
-                }
-                Kind::Macro => {
-                    ui.label(t("Slot"));
-                    ComboBox::from_id_salt("slot")
-                        .selected_text(slot_label(self.slot, used_slots, lang))
-                        .height(400.0)
-                        .show_ui(ui, |ui| {
-                            for s in 0..macro_slots {
-                                ui.selectable_value(&mut self.slot, s, slot_label(s, used_slots, lang));
-                            }
-                        });
-                    ui.end_row();
-                    ui.label(t("Trigger"));
-                    ComboBox::from_id_salt("mode").selected_text(self.mode.label()).show_ui(ui, |ui| {
-                        for m in MacroMode::ALL {
-                            ui.selectable_value(&mut self.mode, m, m.label());
-                        }
-                    });
-                    ui.end_row();
-                }
-                Kind::Raw => {
-                    ui.label(t("Raw"));
-                    ui.text_edit_singleline(&mut self.raw);
-                    ui.end_row();
-                }
-                Kind::Default | Kind::Disabled => {}
-            }
+            ui.separator();
+            ui.vertical(|ui| {
+                ui.set_width(details_w);
+                self.details_ui(ui, lang, used_slots);
+            });
         });
-        ui.add_space(8.0);
-        ui.button(t("Apply")).clicked()
+        apply
+    }
+
+    /// Options of the chosen action (modifier, second key, macro trigger, raw value).
+    fn details_ui(&mut self, ui: &mut egui::Ui, lang: Lang, used_slots: &[u8]) {
+        let t = |s| tr(lang, s);
+        match self.kind {
+            Kind::Key => {
+                ui.label(t("Modifier"));
+                ui.horizontal_wrapped(|ui| {
+                    for m in Modifier::ALL {
+                        ui.selectable_value(&mut self.modifier, m, t(m.label()));
+                    }
+                });
+                ui.add_space(6.0);
+                ui.label(t("Key"));
+                ui.horizontal(|ui| {
+                    key_button(ui, "key", &mut self.key, false, lang);
+                    let label = if self.capture == Capture::Key { t("Press a key…") } else { t("Capture") };
+                    if ui.button(label).on_hover_text(t("Press a key on your keyboard to pick it")).clicked() {
+                        self.capture = Capture::Key;
+                    }
+                });
+                ui.add_space(6.0);
+                ui.label(t("Second key"));
+                ui.horizontal(|ui| {
+                    key_button(ui, "key2", &mut self.key2, true, lang);
+                    let label = if self.capture == Capture::Key2 { t("Press a key…") } else { t("Capture") };
+                    if ui.button(label).clicked() {
+                        self.capture = Capture::Key2;
+                    }
+                });
+            }
+            Kind::Macro => {
+                ui.label(format!("{} {}", t("Macro"), slot_label(self.slot, used_slots, lang)));
+                ui.add_space(6.0);
+                ui.label(t("Trigger"));
+                for m in MacroMode::ALL {
+                    ui.radio_value(&mut self.mode, m, t(m.label()));
+                }
+            }
+            Kind::Default => {
+                ui.weak(t("The key does what is printed on it."));
+            }
+            Kind::Disabled => {
+                ui.weak(t("The key does nothing."));
+            }
+            Kind::Mouse | Kind::Function | Kind::Raw => {}
+        }
+        ui.add_space(10.0);
+        egui::CollapsingHeader::new(t("Advanced: raw matrix entry")).default_open(self.kind == Kind::Raw).show(
+            ui,
+            |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.raw).desired_width(90.0).font(egui::TextStyle::Monospace),
+                    );
+                    if ui.button(t("Use")).clicked() {
+                        self.kind = Kind::Raw;
+                    }
+                });
+            },
+        );
     }
 
     fn handle_capture(&mut self, ui: &egui::Ui) {
@@ -211,12 +273,37 @@ impl ActionEditor {
         });
         if let Some(code) = pressed {
             match self.capture {
-                Capture::Key => self.key = code,
+                Capture::Key => {
+                    self.kind = Kind::Key;
+                    self.key = code;
+                }
                 Capture::Key2 => self.key2 = code,
                 Capture::None => {}
             }
             self.capture = Capture::None;
         }
+    }
+}
+
+/// Full, translated description of a key action.
+pub fn describe(a: KeyAction, lang: Lang) -> String {
+    match a {
+        KeyAction::Key { modifier, key, key2 } => {
+            let mut parts = vec![];
+            if modifier != Modifier::None {
+                parts.push(modifier.label().to_string());
+            }
+            parts.push(keycodes::display(key));
+            if key2 != 0 {
+                parts.push(keycodes::display(key2));
+            }
+            parts.join(" + ")
+        }
+        KeyAction::Disabled => tr(lang, "Disabled").into(),
+        KeyAction::Raw(b) => format!("{} {}", tr(lang, "Raw"), hex4(b)),
+        KeyAction::Mouse(m) => tr(lang, m.label()).into(),
+        KeyAction::Function(f) => tr(lang, f.label()).into(),
+        KeyAction::Macro { index, mode } => format!("{} {index} ({})", tr(lang, "Macro"), tr(lang, mode.label())),
     }
 }
 
@@ -230,18 +317,6 @@ pub fn slot_label(s: u8, used: &[u8], lang: Lang) -> String {
 
 fn hex4(b: [u8; 4]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
-}
-
-pub fn key_combo(ui: &mut egui::Ui, id: &str, value: &mut u8, allow_none: bool) {
-    let text = if *value == 0 && allow_none { "—".to_string() } else { keycodes::display(*value) };
-    ComboBox::from_id_salt(id).selected_text(text).height(400.0).show_ui(ui, |ui| {
-        if allow_none {
-            ui.selectable_value(value, 0, "—");
-        }
-        for (code, name) in keycodes::all() {
-            ui.selectable_value(value, code, name);
-        }
-    });
 }
 
 /// Short label for a key action, to print on a keycap.
@@ -312,7 +387,7 @@ pub fn macro_events_ui(ui: &mut egui::Ui, lang: Lang, m: &mut Macro) -> bool {
             ui.horizontal(|ui| match ev {
                 MacroEvent::KeyDown(k) | MacroEvent::KeyUp(k) => {
                     let mut code = *k;
-                    key_combo(ui, &format!("mk{i}"), &mut code, false);
+                    key_button(ui, ("mk", i), &mut code, false, lang);
                     let mut down = matches!(ev, MacroEvent::KeyDown(_));
                     let text = if down { t("pressed") } else { t("released") };
                     if ui.selectable_label(down, text).clicked() {
@@ -326,7 +401,7 @@ pub fn macro_events_ui(ui: &mut egui::Ui, lang: Lang, m: &mut Macro) -> bool {
                 }
                 MacroEvent::MouseDown(b) | MacroEvent::MouseUp(b) => {
                     let mut btn = *b;
-                    ComboBox::from_id_salt(format!("mb{i}")).selected_text(btn.label()).show_ui(ui, |ui| {
+                    ComboBox::from_id_salt(format!("mb{i}")).selected_text(t(btn.label())).show_ui(ui, |ui| {
                         for a in [
                             MouseAction::Left,
                             MouseAction::Right,
@@ -334,7 +409,7 @@ pub fn macro_events_ui(ui: &mut egui::Ui, lang: Lang, m: &mut Macro) -> bool {
                             MouseAction::Back,
                             MouseAction::Forward,
                         ] {
-                            ui.selectable_value(&mut btn, a, a.label());
+                            ui.selectable_value(&mut btn, a, t(a.label()));
                         }
                     });
                     let mut down = matches!(ev, MacroEvent::MouseDown(_));
@@ -359,10 +434,10 @@ pub fn macro_events_ui(ui: &mut egui::Ui, lang: Lang, m: &mut Macro) -> bool {
                 }
             });
             ui.horizontal(|ui| {
-                if ui.small_button("⬆").on_hover_text(t("Up")).clicked() {
+                if ui.small_button("⬆").on_hover_text(t("Move up")).clicked() {
                     action = Some((i, -1));
                 }
-                if ui.small_button("⬇").on_hover_text(t("Down")).clicked() {
+                if ui.small_button("⬇").on_hover_text(t("Move down")).clicked() {
                     action = Some((i, 1));
                 }
                 if ui.small_button("🗑").on_hover_text(t("Delete")).clicked() {

@@ -1,18 +1,23 @@
 //! Main window.
 
+mod colors;
+mod lighting;
+
 use crate::editors::{self, ActionEditor, Recorder};
 use crate::i18n::{tr, Lang};
 use crate::keyboard_view::{self, KeyStyle};
-use crate::worker::{snapshot, Snapshot, Update, Worker};
+use crate::worker::{snapshot, JobInfo, Snapshot, Update, Worker};
+use colors::ColorsState;
 use eframe::egui::{self, Color32, ComboBox, RichText, Slider};
 use epomaker_core::devices::Database;
 use epomaker_core::hid::{self, HidCandidate, HidTransport};
 use epomaker_core::keymap::{KeyAction, KeyMatrix, Layer};
-use epomaker_core::lighting::{LightEffect, LightMode, Rgb};
+use epomaker_core::lighting::LightEffect;
 use epomaker_core::macros::{Macro, MacroEvent};
 use epomaker_core::profile_file::Backup;
-use epomaker_core::settings::{ReportRate, SleepTimes};
+use epomaker_core::settings::{ChargeState, ReportRate, SleepTimes};
 use epomaker_core::Keyboard;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -46,6 +51,88 @@ enum Target {
     Demo(i64),
 }
 
+/// Device remembered between runs (HID paths change across reboots, so match by ids).
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+enum SavedTarget {
+    Hid { vid: u16, pid: u16, interface: i32 },
+    Demo(i64),
+}
+
+impl SavedTarget {
+    fn of(t: &Target) -> SavedTarget {
+        match t {
+            Target::Hid(c) => SavedTarget::Hid { vid: c.vid, pid: c.pid, interface: c.interface },
+            Target::Demo(id) => SavedTarget::Demo(*id),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+enum ThemeChoice {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl ThemeChoice {
+    const ALL: [ThemeChoice; 3] = [ThemeChoice::System, ThemeChoice::Light, ThemeChoice::Dark];
+    fn label(self) -> &'static str {
+        match self {
+            ThemeChoice::System => "Follow system",
+            ThemeChoice::Light => "Light",
+            ThemeChoice::Dark => "Dark",
+        }
+    }
+    fn egui(self) -> egui::ThemePreference {
+        match self {
+            ThemeChoice::System => egui::ThemePreference::System,
+            ThemeChoice::Light => egui::ThemePreference::Light,
+            ThemeChoice::Dark => egui::ThemePreference::Dark,
+        }
+    }
+}
+
+const ZOOMS: [f32; 6] = [0.8, 0.9, 1.0, 1.1, 1.25, 1.5];
+
+/// Preferences kept between runs (eframe storage).
+#[derive(Serialize, Deserialize)]
+#[serde(default)]
+struct Prefs {
+    lang: Option<Lang>,
+    theme: ThemeChoice,
+    zoom: f32,
+    last_device: Option<SavedTarget>,
+    recent_colors: Vec<[u8; 3]>,
+    light_auto: bool,
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Prefs {
+            lang: None,
+            theme: ThemeChoice::System,
+            zoom: 1.0,
+            last_device: None,
+            recent_colors: vec![],
+            light_auto: true,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ToastKind {
+    Success,
+    Error,
+}
+
+struct Toast {
+    text: String,
+    kind: ToastKind,
+    /// Time it was shown first (set when drawn).
+    born: Option<f64>,
+}
+
 /// Keyboard state as last read/written.
 struct DeviceState {
     snap: Snapshot,
@@ -54,13 +141,19 @@ struct DeviceState {
 
 pub struct App {
     lang: Lang,
+    theme: ThemeChoice,
+    zoom: f32,
     worker: Worker,
     tab: Tab,
     candidates: Vec<HidCandidate>,
     target: Option<Target>,
+    saved_target: Option<SavedTarget>,
     dev: Option<DeviceState>,
     status: String,
     error: Option<String>,
+    toasts: Vec<Toast>,
+    #[cfg(target_os = "linux")]
+    udev: crate::udev::UdevHelper,
     // lighting
     light: LightEffect,
     light_auto: bool,
@@ -70,9 +163,7 @@ pub struct App {
     selected: Option<usize>,
     editor: Option<ActionEditor>,
     // colors
-    brush: [u8; 3],
-    paint_live: bool,
-    last_painted: Option<usize>,
+    colors: ColorsState,
     // macros
     macro_slot: u8,
     macros: BTreeMap<u8, Macro>,
@@ -96,48 +187,74 @@ struct AutoShot {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> App {
         let worker = Worker::new(cc.egui_ctx.clone());
+        #[cfg(feature = "autoshot")]
+        let autoshot = std::env::var_os("EPOMAKER_AUTOSHOT").map(|d| AutoShot {
+            dir: d.into(),
+            step: 0,
+            frames: 0,
+            waiting: false,
+        });
+        #[cfg(feature = "autoshot")]
+        let fresh = autoshot.is_some();
+        #[cfg(not(feature = "autoshot"))]
+        let fresh = false;
+        let prefs: Prefs = match cc.storage {
+            Some(s) if !fresh => eframe::get_value(s, eframe::APP_KEY).unwrap_or_default(),
+            _ => Prefs::default(),
+        };
+        let zoom = if ZOOMS.iter().any(|z| (z - prefs.zoom).abs() < 0.01) { prefs.zoom } else { 1.0 };
+        let theme = if fresh { ThemeChoice::Dark } else { prefs.theme };
+        cc.egui_ctx.set_theme(theme.egui());
+        cc.egui_ctx.set_zoom_factor(zoom);
+        let mut colors = ColorsState::default();
+        colors.recent = prefs.recent_colors.iter().copied().take(colors::RECENT_MAX).collect();
         let mut app = App {
-            lang: Lang::detect(),
+            lang: prefs.lang.unwrap_or_else(Lang::detect),
+            theme,
+            zoom,
             worker,
             tab: Tab::Lighting,
             candidates: vec![],
             target: None,
+            saved_target: prefs.last_device.clone(),
             dev: None,
             status: String::new(),
             error: None,
+            toasts: vec![],
+            #[cfg(target_os = "linux")]
+            udev: Default::default(),
             light: LightEffect::default(),
-            light_auto: true,
+            light_auto: prefs.light_auto,
             light_dirty: false,
             layer: Layer::Profile(0),
             selected: None,
             editor: None,
-            brush: [255, 0, 128],
-            paint_live: true,
-            last_painted: None,
+            colors,
             macro_slot: 0,
             macros: BTreeMap::new(),
             recorder: None,
             confirm_reset: false,
             backup_path: default_backup_path(),
             #[cfg(feature = "autoshot")]
-            autoshot: std::env::var_os("EPOMAKER_AUTOSHOT").map(|d| AutoShot {
-                dir: d.into(),
-                step: 0,
-                frames: 0,
-                waiting: false,
-            }),
+            autoshot,
         };
-        #[cfg(feature = "autoshot")]
-        if app.autoshot.is_some() {
-            app.target = Some(Target::Demo(1118));
-            app.connect(Target::Demo(1118));
+        if fresh {
+            // EPOMAKER_AUTOSHOT_MODEL=<device id> picks another demo keyboard (default: TH80)
+            let id = std::env::var("EPOMAKER_AUTOSHOT_MODEL").ok().and_then(|v| v.parse().ok()).unwrap_or(1118);
+            app.lang = Lang::detect();
+            app.target = Some(Target::Demo(id));
+            app.connect(Target::Demo(id));
             return app;
         }
         app.refresh_devices();
-        if let Some(t) = app.target.clone() {
-            if matches!(t, Target::Hid(_)) {
+        match (app.target.clone(), &app.saved_target) {
+            (Some(t @ Target::Hid(_)), _) => app.connect(t),
+            (None, Some(SavedTarget::Demo(id))) => {
+                let t = Target::Demo(*id);
+                app.target = Some(t.clone());
                 app.connect(t);
             }
+            _ => {}
         }
         app
     }
@@ -146,12 +263,24 @@ impl App {
         tr(self.lang, s)
     }
 
+    fn toast(&mut self, kind: ToastKind, text: impl Into<String>) {
+        self.toasts.push(Toast { text: text.into(), kind, born: None });
+        if self.toasts.len() > 5 {
+            self.toasts.remove(0);
+        }
+    }
+
     fn refresh_devices(&mut self) {
         match hid::enumerate() {
             Ok(c) => {
                 self.candidates = c;
-                if self.target.is_none() {
-                    self.target = self.candidates.first().cloned().map(Target::Hid);
+                let remembered = self
+                    .candidates
+                    .iter()
+                    .find(|c| self.saved_target.as_ref() == Some(&SavedTarget::of(&Target::Hid((*c).clone()))));
+                if self.target.is_none() || remembered.is_some() {
+                    self.target =
+                        remembered.or(self.candidates.first()).cloned().map(Target::Hid).or(self.target.take());
                 }
             }
             Err(e) => self.error = Some(e.to_string()),
@@ -163,9 +292,11 @@ impl App {
         self.selected = None;
         self.editor = None;
         self.macros.clear();
+        self.colors.reset();
+        self.saved_target = Some(SavedTarget::of(&target));
         self.worker.run_raw(
-            "connect",
-            Box::new(move |slot: &mut Option<Keyboard>| {
+            JobInfo { label: "Connect", notify: false, blocking: true },
+            Box::new(move |slot: &mut Option<Keyboard>, progress| {
                 *slot = None;
                 let mut kb = match target {
                     Target::Demo(id) => Keyboard::emulated(id)?,
@@ -175,7 +306,7 @@ impl App {
                         Keyboard::connect(Box::new(HidTransport::open(&c)?), dongle)?
                     }
                 };
-                let snap = snapshot(&mut kb)?;
+                let snap = snapshot(&mut kb, progress)?;
                 *slot = Some(kb);
                 Ok(Update::Connected(Box::new(snap)))
             }),
@@ -190,6 +321,8 @@ impl App {
                 self.layer = Layer::Profile(s.profile);
                 let demo = if s.emulated { " [DEMO]" } else { "" };
                 self.status = format!("{} — {}{demo}", s.info.display_name, s.describe);
+                let text = format!("{}: {}{demo}", self.t("Connected"), s.info.display_name);
+                self.toast(ToastKind::Success, text);
                 let layers = s.layers.iter().cloned().collect();
                 self.dev = Some(DeviceState { snap: *s, layers });
             }
@@ -234,59 +367,93 @@ impl App {
                     d.snap.battery = b;
                 }
             }
-            Update::Message(m) => self.status = m,
+            Update::Message(m) => {
+                self.toast(ToastKind::Success, m.clone());
+                self.status = m;
+            }
             Update::Many(v) => v.into_iter().for_each(|u| self.apply(u)),
+        }
+    }
+
+    fn poll_worker(&mut self) {
+        for (info, r) in self.worker.poll() {
+            match r {
+                Ok(u) => {
+                    self.error = None;
+                    if info.notify {
+                        let text = format!("{} — {}", self.t(info.label), self.t("done"));
+                        self.toast(ToastKind::Success, text);
+                    }
+                    self.apply(u);
+                }
+                Err(e) => {
+                    let msg = format!("{}: {e}", self.t(info.label));
+                    self.error = Some(msg.clone());
+                    self.toast(ToastKind::Error, msg);
+                    #[cfg(target_os = "linux")]
+                    if info.label == "Connect" {
+                        self.udev.show_for(&e.to_string());
+                    }
+                }
+            }
         }
     }
 
     // ------------------------------------------------------------ top bar
 
     fn top_bar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
+        ui.horizontal(|ui| {
             ui.heading("⌨ Open Epomaker Panel");
             ui.separator();
             ui.label(self.t("Keyboard"));
-            let demo_models: Vec<(i64, String)> = {
+            let demo_models: Vec<i64> = {
                 let db = Database::get();
-                let mut v: Vec<(i64, String)> = Vec::new();
+                let mut v: Vec<(i64, &str)> = Vec::new();
                 for d in db.devices.iter().filter(|d| !d.dongle) {
                     if !v.iter().any(|(_, n)| *n == d.name) {
-                        v.push((d.id, d.name.clone()));
+                        v.push((d.id, &d.name));
                     }
                 }
-                v
+                v.into_iter().map(|(id, _)| id).collect()
             };
+            let lang = self.lang;
             let label = |t: &Option<Target>| match t {
                 Some(Target::Hid(c)) => format!("{} {:04x}:{:04x} (if{})", c.product, c.vid, c.pid, c.interface),
                 Some(Target::Demo(id)) => {
-                    let d = Database::get().device_by_id(*id).map(|d| d.name.clone()).unwrap_or_default();
-                    format!("{} — {}", tr(self.lang, "Demo keyboard (no hardware)"), d)
+                    let d = Database::get().device_by_id(*id);
+                    let (name, key) = d.map(|d| (d.display_name.as_str(), d.name.as_str())).unwrap_or_default();
+                    format!("{name} ({key}) — {}", tr(lang, "demo, no hardware"))
                 }
-                None => tr(self.lang, "No keyboard connected").to_string(),
+                None => tr(lang, "No keyboard connected").to_string(),
             };
             let current = label(&self.target);
             let mut new_target = None;
-            ComboBox::from_id_salt("device").width(320.0).selected_text(current).show_ui(ui, |ui| {
-                for c in &self.candidates {
-                    let t = Some(Target::Hid(c.clone()));
-                    if ui.selectable_label(self.target == t, label(&t)).clicked() {
-                        new_target = t;
+            let busy = self.worker.busy();
+            ui.add_enabled_ui(!self.worker.blocked(), |ui| {
+                ComboBox::from_id_salt("device").width(330.0).selected_text(current).show_ui(ui, |ui| {
+                    for c in &self.candidates {
+                        let t = Some(Target::Hid(c.clone()));
+                        if ui.selectable_label(self.target == t, label(&t)).clicked() {
+                            new_target = t;
+                        }
                     }
-                }
-                for (id, _) in &demo_models {
-                    let t = Some(Target::Demo(*id));
-                    if ui.selectable_label(self.target == t, label(&t)).clicked() {
-                        new_target = t;
+                    if !self.candidates.is_empty() {
+                        ui.separator();
                     }
-                }
+                    for id in &demo_models {
+                        let t = Some(Target::Demo(*id));
+                        if ui.selectable_label(self.target == t, label(&t)).clicked() {
+                            new_target = t;
+                        }
+                    }
+                });
             });
             if let Some(t) = new_target {
                 self.target = Some(t);
             }
-            if ui.button("⟳").on_hover_text(self.t("Refresh")).clicked() {
+            if ui.button("⟳").on_hover_text(self.t("Look for keyboards again")).clicked() {
                 self.refresh_devices();
             }
-            let busy = self.worker.busy();
             if ui.add_enabled(!busy && self.target.is_some(), egui::Button::new(self.t("Connect"))).clicked() {
                 if let Some(t) = self.target.clone() {
                     self.connect(t);
@@ -294,131 +461,98 @@ impl App {
             }
             if self.dev.is_some() && ui.add_enabled(!busy, egui::Button::new(self.t("Disconnect"))).clicked() {
                 self.worker.run_raw(
-                    "disconnect",
-                    Box::new(|k: &mut Option<Keyboard>| {
+                    JobInfo::quiet("Disconnect"),
+                    Box::new(|k: &mut Option<Keyboard>, _| {
                         *k = None;
                         Ok(Update::Disconnected)
                     }),
                 );
             }
-            ui.separator();
-            ComboBox::from_id_salt("lang")
-                .selected_text(if self.lang == Lang::Es { "Español" } else { "English" })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.lang, Lang::En, "English");
-                    ui.selectable_value(&mut self.lang, Lang::Es, "Español");
-                });
             if busy {
-                ui.spinner();
-                ui.label(self.t("Working…"));
+                ui.separator();
+                let what = self.t(self.worker.current()).to_string();
+                match self.worker.progress() {
+                    Some(f) => {
+                        ui.add(egui::ProgressBar::new(f).desired_width(140.0).show_percentage());
+                    }
+                    None => {
+                        ui.spinner();
+                    }
+                }
+                ui.label(RichText::new(format!("{what}…")).weak());
             }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| self.preferences_menu(ui));
         });
     }
 
-    // ------------------------------------------------------------ lighting
-
-    fn lighting_tab(&mut self, ui: &mut egui::Ui) {
-        let Some(dev) = &self.dev else { return };
-        let model = dev.snap.model;
+    fn preferences_menu(&mut self, ui: &mut egui::Ui) {
         let lang = self.lang;
         let t = |s| tr(lang, s);
-        let mut changed = false;
-        let mut modes: Vec<LightMode> = vec![LightMode::Off];
-        modes.extend(model.light_modes.iter().map(|c| c.mode));
-        egui::Grid::new("light").num_columns(2).spacing([16.0, 12.0]).show(ui, |ui| {
-            ui.label(t("Effect"));
-            ComboBox::from_id_salt("mode").width(260.0).height(500.0).selected_text(self.light.mode.label()).show_ui(
-                ui,
-                |ui| {
-                    for m in &modes {
-                        if ui.selectable_value(&mut self.light.mode, *m, m.label()).changed() {
-                            self.light.option = 0;
-                            changed = true;
-                        }
-                    }
-                },
-            );
-            ui.end_row();
-            let caps = model.caps(self.light.mode).cloned();
-            if let Some(c) = &caps {
-                if let Some(max) = c.max_speed.filter(|_| self.light.mode.uses_speed()) {
-                    ui.label(t("Speed"));
-                    changed |= ui.add(Slider::new(&mut self.light.speed, 0..=max)).changed();
-                    ui.end_row();
+        ui.menu_button(format!("⚙ {}", t("Preferences")), |ui| {
+            ui.label(RichText::new(t("Language")).strong());
+            ui.radio_value(&mut self.lang, Lang::En, "English");
+            ui.radio_value(&mut self.lang, Lang::Es, "Español");
+            ui.separator();
+            ui.label(RichText::new(t("Theme")).strong());
+            for th in ThemeChoice::ALL {
+                if ui.radio_value(&mut self.theme, th, t(th.label())).changed() {
+                    ui.ctx().set_theme(th.egui());
                 }
-                if let Some(max) = c.max_brightness {
-                    ui.label(t("Brightness"));
-                    changed |= ui.add(Slider::new(&mut self.light.brightness, 0..=max)).changed();
-                    ui.end_row();
-                }
-                if !c.options.is_empty() {
-                    ui.label(t("Direction / variant"));
-                    ui.horizontal_wrapped(|ui| {
-                        for (i, o) in c.options.iter().enumerate() {
-                            changed |= ui.selectable_value(&mut self.light.option, i as u8, o.as_str()).changed();
-                        }
-                    });
-                    ui.end_row();
-                }
-                if c.dazzle {
-                    ui.label("");
-                    changed |= ui.checkbox(&mut self.light.dazzle, t("Rainbow colors")).changed();
-                    ui.end_row();
-                }
-                if c.rgb && !self.light.dazzle {
-                    ui.label(t("Color"));
-                    ui.horizontal(|ui| {
-                        let mut rgb = self.light.color.to_array();
-                        if egui::color_picker::color_edit_button_srgb(ui, &mut rgb).changed() {
-                            self.light.color = Rgb::new(rgb[0], rgb[1], rgb[2]);
-                            changed = true;
-                        }
-                        for preset in [0xFF0000, 0xFF8000, 0xFFFF00, 0x00FF00, 0x00FFFF, 0x0000FF, 0xFF00FF, 0xFFFFFF] {
-                            let c = Rgb(preset);
-                            let (rect, resp) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::click());
-                            ui.painter().rect_filled(rect, 3.0, Color32::from_rgb(c.r(), c.g(), c.b()));
-                            if resp.clicked() {
-                                self.light.color = c;
-                                changed = true;
-                            }
-                        }
-                    });
-                    ui.end_row();
+            }
+            ui.separator();
+            ui.label(RichText::new(t("Interface size")).strong());
+            for z in ZOOMS {
+                if ui.radio(self.zoom == z, format!("{:.0} %", z * 100.0)).clicked() {
+                    self.zoom = z;
+                    ui.ctx().set_zoom_factor(z);
                 }
             }
         });
-        if self.light.mode.needs_host() {
-            ui.colored_label(
-                Color32::YELLOW,
-                t("The effect needs the host to stream audio/screen data; the keyboard will stay dark without it."),
-            );
-        }
-        if changed {
-            self.light_dirty = true;
-        }
-        ui.add_space(12.0);
-        ui.horizontal(|ui| {
-            ui.checkbox(&mut self.light_auto, t("Apply automatically"));
-            if ui.button(t("Apply")).clicked() {
-                self.send_light();
-            }
-            if ui.button(t("Read from keyboard")).clicked() {
-                self.worker.run("read light", |kb| Ok(Update::Light(kb.light()?)));
-            }
-        });
-        let dragging = ui.input(|i| i.pointer.any_down());
-        if self.light_auto && self.light_dirty && !dragging && !self.worker.busy() {
-            self.send_light();
-        }
     }
 
-    fn send_light(&mut self) {
-        self.light_dirty = false;
-        let e = self.light;
-        self.worker.run("set light", move |kb| {
-            kb.set_light(&e)?;
-            Ok(Update::Light(Some(e)))
+    fn toasts_ui(&mut self, ctx: &egui::Context) {
+        let now = ctx.input(|i| i.time);
+        self.toasts.retain(|t| {
+            let life = if t.kind == ToastKind::Error { 9.0 } else { 3.5 };
+            t.born.is_none_or(|b| now - b < life)
         });
+        if self.toasts.is_empty() {
+            return;
+        }
+        ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        let mut close = None;
+        egui::Area::new(egui::Id::new("toasts"))
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-14.0, -34.0))
+            .order(egui::Order::Foreground)
+            .interactable(true)
+            .show(ctx, |ui| {
+                ui.set_max_width(420.0);
+                for (i, toast) in self.toasts.iter_mut().enumerate() {
+                    toast.born.get_or_insert(now);
+                    let v = ui.visuals();
+                    let accent = match toast.kind {
+                        ToastKind::Success => Color32::from_rgb(60, 170, 90),
+                        ToastKind::Error => v.error_fg_color,
+                    };
+                    egui::Frame::popup(ui.style())
+                        .stroke(egui::Stroke::new(1.5, accent))
+                        .inner_margin(egui::Margin::symmetric(12, 8))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                let (r, _) = ui.allocate_exact_size(egui::vec2(4.0, 18.0), egui::Sense::hover());
+                                ui.painter().rect_filled(r, 2.0, accent);
+                                ui.add(egui::Label::new(&toast.text).wrap());
+                                if toast.kind == ToastKind::Error && ui.small_button("x").clicked() {
+                                    close = Some(i);
+                                }
+                            });
+                        });
+                    ui.add_space(4.0);
+                }
+            });
+        if let Some(i) = close {
+            self.toasts.remove(i);
+        }
     }
 
     // ------------------------------------------------------------ key mapping
@@ -453,36 +587,41 @@ impl App {
     }
 
     fn keymap_tab(&mut self, ui: &mut egui::Ui) {
+        let busy = self.worker.busy();
         ui.horizontal(|ui| {
             self.layer_selector(ui);
             ui.separator();
             let layer = self.layer;
-            if ui.button(self.t("Reset layer to factory")).clicked() {
-                self.worker.run("reset layer", move |kb| {
-                    kb.reset_layer(layer)?;
-                    Ok(Update::Layer(layer, kb.read_layer(layer)?))
-                });
-            }
-            if ui.button(self.t("Read from keyboard")).clicked() {
-                self.worker.run("read layer", move |kb| Ok(Update::Layer(layer, kb.read_layer(layer)?)));
-            }
+            ui.add_enabled_ui(!busy, |ui| {
+                if ui.button(self.t("Reset layer to factory")).clicked() {
+                    self.worker.run_notify("Reset layer", move |kb| {
+                        kb.reset_layer(layer)?;
+                        Ok(Update::Layer(layer, kb.read_layer(layer)?))
+                    });
+                }
+                if ui.button(self.t("Read from keyboard")).clicked() {
+                    self.worker.run("Read layer", move |kb| Ok(Update::Layer(layer, kb.read_layer(layer)?)));
+                }
+            });
         });
         let Some(dev) = &self.dev else { return };
         let model = dev.snap.model;
         let Some(matrix) = dev.layers.get(&self.layer).cloned() else { return };
         let selected = self.selected;
+        let lang = self.lang;
         let visuals = ui.visuals().clone();
-        let resp = keyboard_view::show(ui, model, |idx, label| {
-            let entry = matrix.entries.get(idx).copied().unwrap_or_default();
-            let default = model.default_entry(idx).unwrap_or_default();
+        let max_h = (ui.available_height() * 0.5).max(180.0);
+        let resp = keyboard_view::show(ui, model, max_h, |k| {
+            let entry = matrix.entries.get(k.idx).copied().unwrap_or_default();
+            let default = model.default_entry(k.idx).unwrap_or_default();
             let changed = entry != default;
             let action = KeyAction::from_bytes(entry);
             KeyStyle {
                 fill: if changed { Color32::from_rgb(40, 90, 160) } else { visuals.widgets.inactive.bg_fill },
-                text: if changed { editors::short(action) } else { label.to_string() },
+                text: if changed { editors::short(action) } else { k.label.clone() },
                 text_color: if changed { Color32::WHITE } else { visuals.text_color() },
-                highlight: selected == Some(idx),
-                tooltip: format!("{} -> {}", label.replace('\n', " "), describe(action)),
+                highlight: selected == Some(k.idx),
+                tooltip: format!("{} -> {}", k.label.replace('\n', " "), editors::describe(action, lang)),
             }
         });
         if let Some(i) = resp.clicked {
@@ -491,19 +630,25 @@ impl App {
             self.editor =
                 Some(ActionEditor::new(KeyAction::from_bytes(entry), model.default_entry(i).unwrap_or_default()));
         }
-        ui.add_space(8.0);
-        let lang = self.lang;
+        ui.add_space(6.0);
         let used = dev.snap.used_slots.clone();
         let layer = self.layer;
         match (self.selected, &mut self.editor) {
             (Some(i), Some(ed)) => {
                 let label = model.key_for_matrix_index(i).map(|k| k.label.replace('\n', " ")).unwrap_or_default();
                 let entry = matrix.entries.get(i).copied().unwrap_or_default();
-                ui.heading(format!("{label}  ->  {}", describe(KeyAction::from_bytes(entry))));
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(label).heading().strong());
+                    ui.label(RichText::new(format!(
+                        "{}: {}",
+                        tr(lang, "now"),
+                        editors::describe(KeyAction::from_bytes(entry), lang)
+                    )));
+                });
                 let default = model.default_entry(i).unwrap_or_default();
-                if ed.ui(ui, lang, model.macro_slots, &used) {
+                if ed.ui(ui, lang, model.macro_slots, &used, default, !busy) {
                     if let Some(action) = ed.action(default) {
-                        self.worker.run("set key", move |kb| {
+                        self.worker.run_notify("Set key", move |kb| {
                             kb.set_key(layer, i, action)?;
                             Ok(Update::Layer(layer, kb.read_layer(layer)?))
                         });
@@ -516,87 +661,6 @@ impl App {
         }
     }
 
-    // ------------------------------------------------------------ per-key colors
-
-    fn colors_tab(&mut self, ui: &mut egui::Ui) {
-        let Some(dev) = &mut self.dev else { return };
-        let model = dev.snap.model;
-        let lang = self.lang;
-        let t = |s| tr(lang, s);
-        ui.horizontal(|ui| {
-            ui.label(t("Brush"));
-            egui::color_picker::color_edit_button_srgb(ui, &mut self.brush);
-            ui.checkbox(&mut self.paint_live, t("Paint live"));
-            if ui.button(t("Fill all keys")).clicked() {
-                let c = Rgb::new(self.brush[0], self.brush[1], self.brush[2]);
-                dev.snap.colors = vec![c; model.matrix_len()];
-                if self.paint_live {
-                    let colors = dev.snap.colors.clone();
-                    self.worker.run("write colors", move |kb| {
-                        kb.set_key_colors(&colors)?;
-                        Ok(Update::None)
-                    });
-                }
-            }
-        });
-        ui.label(t("Click or drag over keys to paint them."));
-        let colors = dev.snap.colors.clone();
-        let resp = keyboard_view::show(ui, model, |idx, label| {
-            let c = colors.get(idx).copied().unwrap_or_default();
-            let fill = Color32::from_rgb(c.r(), c.g(), c.b());
-            KeyStyle {
-                fill,
-                text: label.to_string(),
-                text_color: keyboard_view::contrast(fill),
-                highlight: false,
-                tooltip: format!("{}  #{:06x}", label.replace('\n', " "), c.0),
-            }
-        });
-        if !ui.input(|i| i.pointer.any_down()) {
-            self.last_painted = None;
-        }
-        if let Some(i) = resp.dragged_over.or(resp.clicked) {
-            if self.last_painted != Some(i) {
-                self.last_painted = Some(i);
-                let c = Rgb::new(self.brush[0], self.brush[1], self.brush[2]);
-                if i < dev.snap.colors.len() {
-                    dev.snap.colors[i] = c;
-                }
-                if self.paint_live {
-                    let slot = match dev.snap.light {
-                        Some(l) if l.mode == LightMode::UserPicture => l.option.min(2),
-                        _ => 0,
-                    };
-                    self.worker.run("paint key", move |kb| {
-                        kb.set_key_color(slot, i, c)?;
-                        Ok(Update::None)
-                    });
-                }
-            }
-        }
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            if ui.button(t("Write all to keyboard")).clicked() {
-                let colors = dev.snap.colors.clone();
-                self.worker.run("write colors", move |kb| {
-                    kb.set_key_colors(&colors)?;
-                    Ok(Update::None)
-                });
-            }
-            if ui.button(t("Read from keyboard")).clicked() {
-                self.worker.run("read colors", |kb| Ok(Update::Colors(kb.key_colors()?)));
-            }
-            if ui.button(t("Activate custom per-key effect")).clicked() {
-                let e = LightEffect { mode: LightMode::UserPicture, brightness: 4, ..LightEffect::default() };
-                self.light = e;
-                self.worker.run("set light", move |kb| {
-                    kb.set_light(&e)?;
-                    Ok(Update::Light(Some(e)))
-                });
-            }
-        });
-    }
-
     // ------------------------------------------------------------ macros
 
     fn macros_tab(&mut self, ui: &mut egui::Ui) {
@@ -604,6 +668,7 @@ impl App {
         let slots = dev.snap.model.macro_slots;
         let used = dev.snap.used_slots.clone();
         let lang = self.lang;
+        let busy = self.worker.busy();
         let t = |s| tr(lang, s);
         egui::Panel::left("macro_slots").resizable(false).default_size(130.0).show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
@@ -613,16 +678,16 @@ impl App {
                         self.macro_slot = s;
                         self.recorder = None;
                         if !self.macros.contains_key(&s) {
-                            self.worker.run("read macro", move |kb| Ok(Update::Macro(s, kb.read_macro(s)?)));
+                            self.worker.run("Read macro", move |kb| Ok(Update::Macro(s, kb.read_macro(s)?)));
                         }
                     }
                 }
             });
         });
         let slot = self.macro_slot;
-        if !self.macros.contains_key(&slot) && !self.worker.busy() {
+        if !self.macros.contains_key(&slot) && !busy {
             self.macros.insert(slot, Macro { repeat_count: 1, events: vec![] });
-            self.worker.run("read macro", move |kb| Ok(Update::Macro(slot, kb.read_macro(slot)?)));
+            self.worker.run("Read macro", move |kb| Ok(Update::Macro(slot, kb.read_macro(slot)?)));
         }
         let Some(m) = self.macros.get_mut(&slot) else { return };
         ui.horizontal(|ui| {
@@ -634,7 +699,10 @@ impl App {
             match &mut self.recorder {
                 Some(rec) => {
                     rec.capture(ui, m);
-                    ui.colored_label(Color32::LIGHT_RED, format!("⏺ {}", t("Recording: type on this window…")));
+                    ui.colored_label(
+                        ui.visuals().error_fg_color,
+                        format!("⏺ {}", t("Recording: type on this window…")),
+                    );
                     if ui.button(t("Stop recording")).clicked() {
                         self.recorder = None;
                     }
@@ -665,9 +733,10 @@ impl App {
         let fits = m.encode().is_ok();
         let used_bytes = m.encode().map(|b| b.iter().rposition(|x| *x != 0).map(|i| i + 1).unwrap_or(0)).unwrap_or(256);
         ui.horizontal(|ui| {
+            ui.add(egui::ProgressBar::new(used_bytes.min(256) as f32 / 256.0).desired_width(160.0));
             ui.label(format!("{}: {used_bytes} / 256", t("Bytes used")));
             if !fits {
-                ui.colored_label(Color32::RED, t("Macro too long"));
+                ui.colored_label(ui.visuals().error_fg_color, t("Macro too long"));
             }
         });
         ui.separator();
@@ -677,14 +746,14 @@ impl App {
         ui.separator();
         let m2 = m.clone();
         ui.horizontal(|ui| {
-            if ui.add_enabled(fits, egui::Button::new(t("Write to keyboard"))).clicked() {
-                self.worker.run("write macro", move |kb| {
+            if ui.add_enabled(fits && !busy, egui::Button::new(t("Write to keyboard"))).clicked() {
+                self.worker.run_notify("Write macro", move |kb| {
                     kb.write_macro(slot, &m2)?;
                     Ok(Update::Macro(slot, kb.read_macro(slot)?))
                 });
             }
-            if ui.button(t("Read from keyboard")).clicked() {
-                self.worker.run("read macro", move |kb| Ok(Update::Macro(slot, kb.read_macro(slot)?)));
+            if ui.add_enabled(!busy, egui::Button::new(t("Read from keyboard"))).clicked() {
+                self.worker.run("Read macro", move |kb| Ok(Update::Macro(slot, kb.read_macro(slot)?)));
             }
         });
     }
@@ -694,6 +763,7 @@ impl App {
     fn settings_tab(&mut self, ui: &mut egui::Ui) {
         let lang = self.lang;
         let t = |s| tr(lang, s);
+        let busy = self.worker.busy();
         let Some(dev) = &mut self.dev else { return };
         let s = &mut dev.snap;
         let model = s.model;
@@ -711,13 +781,13 @@ impl App {
                 ui.label(t("Battery"));
                 ui.horizontal(|ui| {
                     let state = match s.battery.state {
-                        epomaker_core::settings::ChargeState::Discharging => t("discharging"),
-                        epomaker_core::settings::ChargeState::Charging => t("charging"),
-                        epomaker_core::settings::ChargeState::Full => t("full"),
+                        ChargeState::Discharging => t("discharging"),
+                        ChargeState::Charging => t("charging"),
+                        ChargeState::Full => t("full"),
                     };
                     ui.label(format!("{}% ({state})", s.battery.percent));
-                    if ui.small_button("⟳").clicked() {
-                        self.worker.run("battery", |kb| Ok(Update::Battery(kb.battery()?)));
+                    if ui.small_button("⟳").on_hover_text(t("Read battery")).clicked() {
+                        self.worker.run("Read battery", |kb| Ok(Update::Battery(kb.battery()?)));
                     }
                 });
                 ui.end_row();
@@ -728,7 +798,7 @@ impl App {
                 for p in 0..3u8 {
                     if ui.selectable_label(s.profile == p, format!("{}", p + 1)).clicked() {
                         s.profile = p;
-                        self.worker.run("set profile", move |kb| {
+                        self.worker.run("Set profile", move |kb| {
                             kb.set_profile(p)?;
                             Ok(Update::Profile(kb.profile()?))
                         });
@@ -745,7 +815,7 @@ impl App {
                         if ui.selectable_label(cur == Some(*r), format!("{} Hz", r.hz())).clicked() {
                             s.rates[p] = Some(*r);
                             let (r, pp) = (*r, p as u8);
-                            self.worker.run("set rate", move |kb| {
+                            self.worker.run("Set polling rate", move |kb| {
                                 kb.set_report_rate(pp, r)?;
                                 Ok(Update::None)
                             });
@@ -765,7 +835,7 @@ impl App {
             changed |= ui.checkbox(&mut o.power_save, t("Power saving")).changed();
             if changed {
                 let (o, pp) = (*o, p as u8);
-                self.worker.run("set options", move |kb| {
+                self.worker.run("Set options", move |kb| {
                     kb.set_options(pp, &o)?;
                     Ok(Update::None)
                 });
@@ -776,7 +846,7 @@ impl App {
                 let r = ui.add(Slider::new(&mut s.debounce, 1..=50));
                 if r.drag_stopped() || (r.changed() && !r.dragged()) {
                     let d = s.debounce;
-                    self.worker.run("set debounce", move |kb| {
+                    self.worker.run("Set debounce", move |kb| {
                         kb.set_debounce(d)?;
                         Ok(Update::None)
                     });
@@ -784,7 +854,7 @@ impl App {
             });
             if ui.checkbox(&mut s.auto_os, t("Automatic OS detection")).changed() {
                 let v = s.auto_os;
-                self.worker.run("set auto os", move |kb| {
+                self.worker.run("Set auto OS", move |kb| {
                     kb.set_auto_os(v)?;
                     Ok(Update::None)
                 });
@@ -824,14 +894,15 @@ impl App {
                 });
                 if changed {
                     s.sleep = sl;
-                    self.worker.run("set sleep", move |kb| {
+                    self.worker.run("Set sleep timers", move |kb| {
                         kb.set_sleep_times(&sl)?;
                         Ok(Update::None)
                     });
                 }
             }
             ui.separator();
-            if ui.button(RichText::new(t("Factory reset…")).color(Color32::LIGHT_RED)).clicked() {
+            let reset = egui::Button::new(RichText::new(t("Factory reset…")).color(ui.visuals().error_fg_color));
+            if ui.add_enabled(!busy, reset).clicked() {
                 self.confirm_reset = true;
             }
         });
@@ -842,12 +913,12 @@ impl App {
                     if ui.button(t("Cancel")).clicked() {
                         self.confirm_reset = false;
                     }
-                    if ui.button(RichText::new(t("Reset")).color(Color32::LIGHT_RED)).clicked() {
+                    if ui.button(RichText::new(t("Reset")).color(ui.visuals().error_fg_color)).clicked() {
                         self.confirm_reset = false;
                         self.macros.clear();
-                        self.worker.run("factory reset", |kb| {
+                        self.worker.run_with(JobInfo::blocking("Factory reset"), |kb, progress| {
                             kb.factory_reset()?;
-                            Ok(Update::Connected(Box::new(snapshot(kb)?)))
+                            Ok(Update::Connected(Box::new(snapshot(kb, progress)?)))
                         });
                     }
                 });
@@ -863,29 +934,31 @@ impl App {
     fn backup_tab(&mut self, ui: &mut egui::Ui) {
         let lang = self.lang;
         let t = |s| tr(lang, s);
+        let busy = self.worker.busy();
         ui.label(t("Save the whole configuration of the keyboard to a file, or load one."));
         ui.horizontal(|ui| {
             ui.label(t("File"));
             ui.add(egui::TextEdit::singleline(&mut self.backup_path).desired_width(420.0));
         });
         ui.horizontal(|ui| {
-            if ui.button(t("Save backup")).clicked() {
+            if ui.add_enabled(!busy, egui::Button::new(t("Save backup"))).clicked() {
                 let path = self.backup_path.clone();
                 let done = format!("{}: {path}", t("Saved"));
-                self.worker.run("backup", move |kb| {
+                self.worker.run_with(JobInfo::quiet("Save backup"), move |kb, _| {
                     let b = Backup::capture(kb)?;
                     std::fs::write(&path, serde_json::to_string_pretty(&b)?)?;
                     Ok(Update::Message(done))
                 });
             }
-            if ui.button(t("Load backup")).clicked() {
+            if ui.add_enabled(!busy, egui::Button::new(t("Load backup"))).clicked() {
                 let path = self.backup_path.clone();
                 let done = format!("{}: {path}", t("Restored"));
                 self.macros.clear();
-                self.worker.run("restore", move |kb| {
+                let info = JobInfo { label: "Load backup", notify: false, blocking: true };
+                self.worker.run_with(info, move |kb, progress| {
                     let b: Backup = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
                     b.restore(kb)?;
-                    Ok(Update::Many(vec![Update::Connected(Box::new(snapshot(kb)?)), Update::Message(done)]))
+                    Ok(Update::Many(vec![Update::Connected(Box::new(snapshot(kb, progress)?)), Update::Message(done)]))
                 });
             }
         });
@@ -916,15 +989,6 @@ fn minutes(ui: &mut egui::Ui, label: &str, secs: &mut u16, min: u16, max: u16, a
     changed
 }
 
-fn describe(a: KeyAction) -> String {
-    match a {
-        KeyAction::Key { .. } | KeyAction::Disabled | KeyAction::Raw(_) => editors::short(a),
-        KeyAction::Mouse(m) => m.label().into(),
-        KeyAction::Function(f) => f.label().into(),
-        KeyAction::Macro { index, mode } => format!("Macro {index} ({})", mode.label()),
-    }
-}
-
 fn default_backup_path() -> String {
     let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).unwrap_or_else(|_| ".".into());
     std::path::Path::new(&home).join("epomaker-backup.json").to_string_lossy().into_owned()
@@ -932,6 +996,105 @@ fn default_backup_path() -> String {
 
 #[cfg(feature = "autoshot")]
 impl App {
+    const SHOTS: [&'static str; 10] = [
+        "lighting",
+        "lighting-ripple",
+        "keymap",
+        "keymap-search",
+        "colors",
+        "macros",
+        "settings",
+        "backup",
+        "udev",
+        "light-theme",
+    ];
+
+    /// Prepares the window for screenshot `name`.
+    fn autoshot_setup(&mut self, name: &str, ctx: &egui::Context) {
+        use epomaker_core::keymap::Modifier;
+        use epomaker_core::lighting::{LightMode, Rgb};
+        match name {
+            "lighting" => self.tab = Tab::Lighting,
+            "lighting-ripple" => {
+                self.light = LightEffect {
+                    mode: LightMode::Ripple,
+                    color: Rgb(0x00C8FF),
+                    dazzle: false,
+                    ..LightEffect::default()
+                };
+            }
+            "keymap" => {
+                self.tab = Tab::Keymap;
+                let Some(d) = &self.dev else { return };
+                // show a remapped key and its editor
+                let find = |p: &str| {
+                    d.snap.model.keys.iter().find(|k| k.label.starts_with(p)).and_then(|k| k.matrix_index).unwrap_or(0)
+                };
+                let (i, caps) = (find("A"), find("Caps"));
+                let layer = self.layer;
+                let ctrl_c = KeyAction::Key { modifier: Modifier::Ctrl, key: 0x06, key2: 0 };
+                self.worker.run("Demo remap", move |kb| {
+                    kb.set_key(layer, caps, KeyAction::Disabled)?;
+                    kb.set_key(layer, i, ctrl_c)?;
+                    Ok(Update::Layer(layer, kb.read_layer(layer)?))
+                });
+                self.selected = Some(i);
+                let def = d.snap.model.default_entry(i).unwrap_or_default();
+                self.editor = Some(ActionEditor::new(ctrl_c, def));
+            }
+            "keymap-search" => {
+                let Some(d) = &self.dev else { return };
+                let knob = crate::keyboard_view::Geometry::new(d.snap.model).knob.map(|k| k.press);
+                if let Some(i) = knob {
+                    self.selected = Some(i);
+                    let def = d.snap.model.default_entry(i).unwrap_or_default();
+                    let mut ed = ActionEditor::new(KeyAction::from_bytes(def), def);
+                    ed.set_search("vol");
+                    self.editor = Some(ed);
+                }
+            }
+            "colors" => {
+                self.tab = Tab::Colors;
+                self.colors.autoshot_demo(self.dev.as_mut().map(|d| &mut d.snap));
+            }
+            "macros" => {
+                self.tab = Tab::Macros;
+                self.macros.insert(
+                    0,
+                    Macro {
+                        repeat_count: 1,
+                        events: vec![
+                            MacroEvent::KeyDown(0xE1),
+                            MacroEvent::Delay(15),
+                            MacroEvent::KeyDown(0x0B),
+                            MacroEvent::Delay(40),
+                            MacroEvent::KeyUp(0x0B),
+                            MacroEvent::KeyUp(0xE1),
+                        ],
+                    },
+                );
+            }
+            "settings" => self.tab = Tab::Settings,
+            "backup" => self.tab = Tab::Backup,
+            "udev" => {
+                #[cfg(target_os = "linux")]
+                self.udev.show_for("Permission denied");
+            }
+            "light-theme" => {
+                #[cfg(target_os = "linux")]
+                {
+                    self.udev.open = false;
+                }
+                self.tab = Tab::Lighting;
+                self.theme = ThemeChoice::Light;
+                ctx.set_theme(self.theme.egui());
+                self.toast(ToastKind::Success, format!("{} — {}", self.t("Set key"), self.t("done")));
+                self.toast(ToastKind::Error, format!("{}: HID error: device disconnected", self.t("Write colors")));
+            }
+            _ => {}
+        }
+    }
+
     fn autoshot(&mut self, ctx: &egui::Context) {
         let Some(mut shot) = self.autoshot.take() else { return };
         ctx.request_repaint();
@@ -946,8 +1109,8 @@ impl App {
             })
         });
         if let Some(img) = saved {
-            let path = shot.dir.join(format!("{}-{:?}.png", shot.step, self.lang).to_lowercase());
-            let file = std::io::BufWriter::new(std::fs::File::create(&path).expect("create png"));
+            let name = format!("{}-{}-{:?}.png", shot.step, Self::SHOTS[shot.step], self.lang).to_lowercase();
+            let file = std::io::BufWriter::new(std::fs::File::create(shot.dir.join(name)).expect("create png"));
             let mut enc = png::Encoder::new(file, img.size[0] as u32, img.size[1] as u32);
             enc.set_color(png::ColorType::Rgba);
             enc.set_depth(png::BitDepth::Eight);
@@ -958,56 +1121,15 @@ impl App {
             shot.waiting = false;
             shot.frames = 0;
         }
-        if shot.step >= Tab::ALL.len() {
+        if shot.step >= Self::SHOTS.len() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         }
-        self.tab = Tab::ALL[shot.step];
-        if self.tab == Tab::Keymap && self.selected.is_none() {
-            if let Some(d) = &self.dev {
-                // show a remapped key and its editor
-                let i = d.snap.model.keys.iter().find(|k| k.label == "A").and_then(|k| k.matrix_index).unwrap_or(0);
-                let caps = d
-                    .snap
-                    .model
-                    .keys
-                    .iter()
-                    .find(|k| k.label.starts_with("Caps"))
-                    .and_then(|k| k.matrix_index)
-                    .unwrap_or(0);
-                let layer = self.layer;
-                self.worker.run("demo remap", move |kb| {
-                    kb.set_key(layer, caps, KeyAction::Disabled)?;
-                    kb.set_key(
-                        layer,
-                        i,
-                        KeyAction::Key { modifier: epomaker_core::keymap::Modifier::Ctrl, key: 0x06, key2: 0 },
-                    )?;
-                    Ok(Update::Layer(layer, kb.read_layer(layer)?))
-                });
-                self.selected = Some(i);
-                let def = d.snap.model.default_entry(i).unwrap_or_default();
-                self.editor = Some(ActionEditor::new(
-                    KeyAction::Key { modifier: epomaker_core::keymap::Modifier::Ctrl, key: 0x06, key2: 0 },
-                    def,
-                ));
-            }
-        }
-        if self.tab == Tab::Macros {
-            self.macros.entry(0).or_insert(Macro {
-                repeat_count: 1,
-                events: vec![
-                    MacroEvent::KeyDown(0xE1),
-                    MacroEvent::Delay(15),
-                    MacroEvent::KeyDown(0x0B),
-                    MacroEvent::Delay(40),
-                    MacroEvent::KeyUp(0x0B),
-                    MacroEvent::KeyUp(0xE1),
-                ],
-            });
+        if shot.frames == 0 {
+            self.autoshot_setup(Self::SHOTS[shot.step], ctx);
         }
         shot.frames += 1;
-        if !shot.waiting && shot.frames > 8 {
+        if !shot.waiting && shot.frames > 10 {
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
             shot.waiting = true;
         }
@@ -1017,15 +1139,17 @@ impl App {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
         #[cfg(feature = "autoshot")]
-        self.autoshot(&ui.ctx().clone());
-        for (label, r) in self.worker.poll() {
-            match r {
-                Ok(u) => {
-                    self.error = None;
-                    self.apply(u);
-                }
-                Err(e) => self.error = Some(format!("{label}: {e}")),
+        self.autoshot(&ctx);
+        self.zoom = ctx.zoom_factor();
+        self.poll_worker();
+        #[cfg(target_os = "linux")]
+        if self.udev.ui(&ctx, self.lang) {
+            self.toast(ToastKind::Success, self.t("Rule installed. Reconnecting…").to_string());
+            self.refresh_devices();
+            if let Some(t @ Target::Hid(_)) = self.target.clone() {
+                self.connect(t);
             }
         }
         egui::Panel::top("top").show(ui, |ui| {
@@ -1036,7 +1160,7 @@ impl eframe::App for App {
         egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
                 if let Some(e) = &self.error {
-                    ui.colored_label(Color32::LIGHT_RED, format!("{}: {e}", self.t("Error")));
+                    ui.colored_label(ui.visuals().error_fg_color, format!("{}: {e}", self.t("Error")));
                 } else {
                     ui.label(&self.status);
                 }
@@ -1053,7 +1177,9 @@ impl eframe::App for App {
             ui.add_space(8.0);
             for tab in Tab::ALL {
                 let text = RichText::new(self.t(tab.label())).size(15.0);
-                if ui.add_enabled(self.dev.is_some(), egui::Button::selectable(self.tab == tab, text)).clicked() {
+                let b =
+                    egui::Button::selectable(self.tab == tab, text).min_size(egui::vec2(ui.available_width(), 28.0));
+                if ui.add_enabled(self.dev.is_some(), b).clicked() {
                     self.tab = tab;
                 }
             }
@@ -1069,6 +1195,9 @@ impl eframe::App for App {
                 });
                 return;
             }
+            if self.worker.blocked() {
+                ui.disable();
+            }
             match self.tab {
                 Tab::Lighting => self.lighting_tab(ui),
                 Tab::Keymap => self.keymap_tab(ui),
@@ -1078,5 +1207,50 @@ impl eframe::App for App {
                 Tab::Backup => self.backup_tab(ui),
             }
         });
+        self.toasts_ui(&ctx);
+    }
+
+    #[cfg(feature = "autoshot")]
+    fn persist_egui_memory(&self) -> bool {
+        self.autoshot.is_none()
+    }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        #[cfg(feature = "autoshot")]
+        if self.autoshot.is_some() {
+            return;
+        }
+        let prefs = Prefs {
+            lang: Some(self.lang),
+            theme: self.theme,
+            zoom: self.zoom,
+            last_device: self.saved_target.clone(),
+            recent_colors: self.colors.recent.clone(),
+            light_auto: self.light_auto,
+        };
+        eframe::set_value(storage, eframe::APP_KEY, &prefs);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prefs_round_trip_and_tolerate_missing_fields() {
+        let p = Prefs {
+            lang: Some(Lang::Es),
+            theme: ThemeChoice::Light,
+            zoom: 1.25,
+            last_device: Some(SavedTarget::Hid { vid: 0x3151, pid: 0x4010, interface: 2 }),
+            recent_colors: vec![[1, 2, 3]],
+            light_auto: false,
+        };
+        let back: Prefs = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        assert_eq!(back.lang, Some(Lang::Es));
+        assert!(back.theme == ThemeChoice::Light && back.zoom == 1.25 && !back.light_auto);
+        assert!(back.last_device == p.last_device && back.recent_colors == p.recent_colors);
+        let old: Prefs = serde_json::from_str(r#"{"lang":"En"}"#).unwrap();
+        assert!(old.light_auto && old.zoom == 1.0 && old.theme == ThemeChoice::System);
     }
 }
