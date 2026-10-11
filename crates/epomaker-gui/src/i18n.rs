@@ -491,6 +491,8 @@ mod tests {
     /// Strings passed to the translation functions, plus labels returned by `=> "…"` arms
     /// and job labels.
     fn ui_strings(name: &str, src: &str) -> Vec<String> {
+        // a Windows checkout may have CRLF line ends, which break `\` line continuations
+        let src = &src.replace("\r\n", "\n");
         let mut needles = vec!["t(", "tr(lang, ", "tr(self.lang, ", "run(", "run_notify(", "label: "];
         needles.extend(["quiet(", "notify(", "blocking("]);
         if name != "editors.rs" {

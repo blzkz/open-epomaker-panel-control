@@ -1,0 +1,4 @@
+# Keep LF everywhere: sources are scanned by tests and JSON vectors are embedded verbatim.
+* text=auto eol=lf
+*.png binary
+*.ico binary
