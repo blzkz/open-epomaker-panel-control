@@ -52,7 +52,7 @@ jobs:
           packaging/linux/build-appimage.sh dist
           name=open-epomaker-panel-linux-x86_64
           mkdir -p "$name/icons"
-          cp target/release/epomaker target/release/epomaker-panel README.md README.es.md "$name/"
+          cp target/release/epomaker target/release/epomaker-panel README.md README.es.md LICENSE "$name/"
           cp -r packaging/linux "$name/linux"
           cp packaging/icons/open-epomaker-panel.svg packaging/icons/open-epomaker-panel.png "$name/icons/"
           tar -czf "dist/$name.tar.gz" "$name"
@@ -100,7 +100,7 @@ jobs:
         run: |
           $name = "open-epomaker-panel-windows-x86_64"
           New-Item -ItemType Directory -Force -Path $name, dist | Out-Null
-          Copy-Item target/release/epomaker-panel.exe, target/release/epomaker.exe, README.md, README.es.md $name
+          Copy-Item target/release/epomaker-panel.exe, target/release/epomaker.exe, README.md, README.es.md, LICENSE $name
           Compress-Archive -Path $name -DestinationPath "dist/$name.zip"
       - uses: actions/upload-artifact@v7
         with:

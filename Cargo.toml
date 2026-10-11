@@ -5,6 +5,8 @@ members = ["crates/epomaker-core", "crates/epomaker-cli", "crates/epomaker-gui"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+repository = "https://github.com/blzkz/open-epomaker-panel-control"
 rust-version = "1.88"
 
 [workspace.dependencies]

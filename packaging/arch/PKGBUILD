@@ -5,7 +5,7 @@ pkgrel=1
 pkgdesc="Open-source control panel for EPOMAKER keyboards (TH80 family)"
 arch=('x86_64')
 url="https://github.com/blzkz/open-epomaker-panel-control"
-license=('LicenseRef-Unspecified')
+license=('MIT')
 depends=('gcc-libs' 'glibc' 'systemd-libs' 'libxkbcommon' 'libglvnd' 'hicolor-icon-theme')
 optdepends=('wayland: Wayland sessions'
             'libx11: X11 sessions'
@@ -46,4 +46,5 @@ package() {
   install -Dm644 packaging/icons/open-epomaker-panel.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/open-epomaker-panel.svg"
   install -Dm644 packaging/icons/open-epomaker-panel.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/open-epomaker-panel.png"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

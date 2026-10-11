@@ -3,6 +3,8 @@ name = "epomaker-cli"
 description = "Command line tool to configure EPOMAKER keyboards"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [[bin]]
 name = "epomaker"

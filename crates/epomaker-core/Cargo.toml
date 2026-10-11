@@ -3,6 +3,8 @@ name = "epomaker-core"
 description = "Open implementation of the EPOMAKER / RongYuan (YC500) keyboard configuration protocol"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [features]
 default = ["hid"]

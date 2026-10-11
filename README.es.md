@@ -63,3 +63,7 @@ epomaker --demo info                 # con el teclado emulado
 
 La interfaz gráfica es `epomaker-panel`. Consulta el [README en inglés](README.md) para más
 ejemplos y [docs/PROTOCOL.md](docs/PROTOCOL.md) para la descripción del protocolo.
+
+## Licencia
+
+[MIT](LICENSE). Proyecto no afiliado ni respaldado por EPOMAKER.

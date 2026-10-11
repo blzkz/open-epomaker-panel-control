@@ -131,3 +131,7 @@ If you own a TH80 (or another EPOMAKER YC500 keyboard), please help:
 1. `epomaker probe` and share the output.
 2. `epomaker info`, then try a lighting change (`epomaker light set breath --color 00ff00`).
 3. Back up before remapping keys: `epomaker backup before.json`.
+
+## License
+
+[MIT](LICENSE). Not affiliated with or endorsed by EPOMAKER.

@@ -3,6 +3,8 @@ name = "epomaker-gui"
 description = "Open control panel for EPOMAKER keyboards"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [[bin]]
 name = "epomaker-panel"
@@ -29,7 +31,8 @@ autoshot = ["dep:png"]
 [package.metadata.deb]
 name = "open-epomaker-panel"
 maintainer = "blzkz <sergiobl88@gmail.com>"
-copyright = "blzkz"
+copyright = "2026, blzkz"
+license-file = ["../../LICENSE", "0"]
 section = "utils"
 priority = "optional"
 depends = "$auto"
@@ -52,7 +55,7 @@ assets = [
 [package.metadata.generate-rpm]
 name = "open-epomaker-panel"
 summary = "Open control panel for EPOMAKER keyboards"
-license = "LicenseRef-Unspecified"
+license = "MIT"
 url = "https://github.com/blzkz/open-epomaker-panel-control"
 post_install_script = "udevadm control --reload-rules >/dev/null 2>&1 || :\nudevadm trigger --subsystem-match=hidraw >/dev/null 2>&1 || :"
 assets = [
@@ -63,4 +66,5 @@ assets = [
     { source = "../../packaging/icons/open-epomaker-panel.svg", dest = "/usr/share/icons/hicolor/scalable/apps/open-epomaker-panel.svg", mode = "644" },
     { source = "../../packaging/icons/open-epomaker-panel.png", dest = "/usr/share/icons/hicolor/256x256/apps/open-epomaker-panel.png", mode = "644" },
     { source = "../../README.md", dest = "/usr/share/doc/open-epomaker-panel/README.md", mode = "644", doc = true },
+    { source = "../../LICENSE", dest = "/usr/share/licenses/open-epomaker-panel/LICENSE", mode = "644", doc = true },
 ]
