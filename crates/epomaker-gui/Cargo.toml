@@ -1,0 +1,22 @@
+[package]
+name = "epomaker-gui"
+description = "Open control panel for EPOMAKER keyboards"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "epomaker-panel"
+path = "src/main.rs"
+
+[dependencies]
+epomaker-core = { workspace = true }
+eframe = { workspace = true }
+env_logger = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+png = { version = "0.18", optional = true }
+
+[features]
+# Development aid: `EPOMAKER_AUTOSHOT=<dir>` renders every tab of the demo keyboard to PNG files.
+autoshot = ["dep:png"]

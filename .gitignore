@@ -1,0 +1,5 @@
+# Vendor binaries and extracted/decompiled vendor code are copyrighted: never commit them.
+/vendor/
+/target/
+**/*.rs.bk
+node_modules/

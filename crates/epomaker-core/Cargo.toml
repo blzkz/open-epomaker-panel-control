@@ -1,0 +1,22 @@
+[package]
+name = "epomaker-core"
+description = "Open implementation of the EPOMAKER / RongYuan (YC500) keyboard configuration protocol"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = ["hid"]
+hid = ["dep:hidapi"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+
+# Linux/macOS: the bundled C hidapi (hidraw backend on Linux). Windows: pure-Rust backend.
+[target.'cfg(not(windows))'.dependencies]
+hidapi = { version = "2.6", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+hidapi = { version = "2.6", default-features = false, features = ["windows-native"], optional = true }

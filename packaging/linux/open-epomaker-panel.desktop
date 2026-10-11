@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Open Epomaker Panel
+GenericName=Keyboard configuration
+Comment=Configure lighting, keys and macros of EPOMAKER keyboards
+Exec=epomaker-panel
+Icon=input-keyboard
+Terminal=false
+Categories=Settings;HardwareSettings;Utility;
+Keywords=keyboard;epomaker;rgb;macro;TH80;

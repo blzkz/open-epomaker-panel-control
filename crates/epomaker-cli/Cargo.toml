@@ -1,0 +1,16 @@
+[package]
+name = "epomaker-cli"
+description = "Command line tool to configure EPOMAKER keyboards"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "epomaker"
+path = "src/main.rs"
+
+[dependencies]
+epomaker-core = { workspace = true }
+clap = { workspace = true }
+env_logger = { workspace = true }
+log = { workspace = true }
+serde_json = { workspace = true }
