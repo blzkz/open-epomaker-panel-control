@@ -1,6 +1,7 @@
-//! Agent settings, stored as JSON in the user's configuration directory.
+//! Settings of the tray agent (`epomaker-agent`), stored as JSON in the user's
+//! configuration directory. Shared with the GUI, which edits the rules.
 
-use epomaker_host::stream::LiveEffect;
+use crate::stream::LiveEffect;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -55,6 +56,51 @@ pub fn path() -> PathBuf {
     dir().join("agent.json")
 }
 
+/// Takes the per-user agent lock (held for the agent's lifetime).
+pub fn lock_instance() -> std::io::Result<std::fs::File> {
+    std::fs::create_dir_all(dir())?;
+    let file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir().join("agent.lock"))?;
+    file.try_lock().map_err(|e| std::io::Error::other(e.to_string()))?;
+    Ok(file)
+}
+
+fn panel_heartbeat_file() -> PathBuf {
+    std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(dir).join("open-epomaker-panel.alive")
+}
+
+/// Seconds after which a silent panel is considered closed (crash, kill).
+const HEARTBEAT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
+
+/// Called periodically by the control panel while it has a keyboard open, so the agent
+/// lets go of the device.
+pub fn panel_heartbeat() {
+    let f = panel_heartbeat_file();
+    let _ = std::fs::create_dir_all(f.parent().unwrap_or(std::path::Path::new(".")));
+    let _ = std::fs::write(f, std::process::id().to_string());
+}
+
+/// The panel is closing: the agent may take the keyboard back.
+pub fn panel_closed() {
+    let _ = std::fs::remove_file(panel_heartbeat_file());
+}
+
+/// Whether a control panel is open (recent heartbeat).
+pub fn panel_open() -> bool {
+    std::fs::metadata(panel_heartbeat_file())
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age < HEARTBEAT_TIMEOUT)
+}
+
+/// Whether an agent currently holds the lock.
+pub fn agent_running() -> bool {
+    match std::fs::OpenOptions::new().write(true).open(dir().join("agent.lock")) {
+        Ok(f) => f.try_lock().is_err(),
+        Err(_) => false,
+    }
+}
+
 impl Config {
     /// Loads the configuration, creating a commented default file the first time.
     pub fn load() -> Config {
@@ -69,6 +115,11 @@ impl Config {
                 c
             }
         }
+    }
+
+    /// Last modification time of the settings file.
+    pub fn modified() -> Option<std::time::SystemTime> {
+        std::fs::metadata(path()).and_then(|m| m.modified()).ok()
     }
 
     pub fn save(&self) {

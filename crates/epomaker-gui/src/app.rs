@@ -1,7 +1,9 @@
 //! Main window.
 
+mod agent;
 mod colors;
 mod lighting;
+mod tester;
 
 use crate::editors::{self, ActionEditor, Recorder};
 use crate::i18n::{tr, Lang};
@@ -26,18 +28,23 @@ enum Tab {
     Keymap,
     Colors,
     Macros,
+    Tester,
+    Agent,
     Settings,
     Backup,
 }
 
 impl Tab {
-    const ALL: [Tab; 6] = [Tab::Lighting, Tab::Keymap, Tab::Colors, Tab::Macros, Tab::Settings, Tab::Backup];
+    const ALL: [Tab; 8] =
+        [Tab::Lighting, Tab::Keymap, Tab::Colors, Tab::Macros, Tab::Tester, Tab::Agent, Tab::Settings, Tab::Backup];
     fn label(self) -> &'static str {
         match self {
             Tab::Lighting => "Lighting",
             Tab::Keymap => "Key mapping",
             Tab::Colors => "Per-key colors",
             Tab::Macros => "Macros",
+            Tab::Tester => "Key tester",
+            Tab::Agent => "Tray agent",
             Tab::Settings => "Settings",
             Tab::Backup => "Backup",
         }
@@ -168,6 +175,10 @@ pub struct App {
     macro_slot: u8,
     macros: BTreeMap<u8, Macro>,
     recorder: Option<Recorder>,
+    macro_file: String,
+    last_heartbeat: Option<std::time::Instant>,
+    tester: tester::TesterState,
+    agent: agent::AgentState,
     // settings
     confirm_reset: bool,
     backup_path: String,
@@ -233,6 +244,10 @@ impl App {
             macro_slot: 0,
             macros: BTreeMap::new(),
             recorder: None,
+            macro_file: default_macro_path(),
+            last_heartbeat: None,
+            tester: Default::default(),
+            agent: Default::default(),
             confirm_reset: false,
             backup_path: default_backup_path(),
             #[cfg(feature = "autoshot")]
@@ -257,6 +272,20 @@ impl App {
             _ => {}
         }
         app
+    }
+
+    /// Tells a running tray agent that the panel is open, so it releases the keyboard.
+    fn heartbeat(&mut self, ctx: &egui::Context) {
+        #[cfg(feature = "autoshot")]
+        if self.autoshot.is_some() {
+            return;
+        }
+        let due = self.last_heartbeat.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(4));
+        if due {
+            epomaker_host::agent_config::panel_heartbeat();
+            self.last_heartbeat = Some(std::time::Instant::now());
+        }
+        ctx.request_repaint_after(std::time::Duration::from_secs(4));
     }
 
     fn t<'a>(&self, s: &'a str) -> &'a str {
@@ -301,6 +330,11 @@ impl App {
                 let mut kb = match target {
                     Target::Demo(id) => Keyboard::emulated(id)?,
                     Target::Hid(c) => {
+                        if epomaker_host::agent_config::agent_running() {
+                            // the tray agent polls every 250 ms: let it notice the panel and let go
+                            epomaker_host::agent_config::panel_heartbeat();
+                            std::thread::sleep(std::time::Duration::from_millis(600));
+                        }
                         let dongle = Database::get().devices.iter().any(|d| d.pid == c.pid && d.dongle)
                             && !Database::get().devices.iter().any(|d| d.pid == c.pid && !d.dongle);
                         Keyboard::connect(Box::new(HidTransport::open(&c)?), dongle)?
@@ -726,6 +760,9 @@ impl App {
                     MacroEvent::MouseUp(epomaker_core::keymap::MouseAction::Left),
                 ]);
             }
+            if ui.button(t("Add mouse move")).clicked() {
+                m.events.extend([MacroEvent::MouseMove { dx: 20, dy: 0 }, MacroEvent::Delay(10)]);
+            }
             if ui.button(t("Clear")).clicked() {
                 m.events.clear();
             }
@@ -756,6 +793,36 @@ impl App {
                 self.worker.run("Read macro", move |kb| Ok(Update::Macro(slot, kb.read_macro(slot)?)));
             }
         });
+        // macro library: share macros as files
+        let mut note: Option<Result<String, String>> = None;
+        ui.horizontal(|ui| {
+            ui.label(t("File"));
+            ui.add(egui::TextEdit::singleline(&mut self.macro_file).desired_width(320.0));
+            if ui.button(t("Export")).clicked() {
+                let path = std::path::PathBuf::from(&self.macro_file);
+                let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                note = Some(
+                    epomaker_core::macros::MacroFile::new(name, m.clone())
+                        .save(&path)
+                        .map(|_| format!("{}: {}", t("Saved"), path.display()))
+                        .map_err(|e| e.to_string()),
+                );
+            }
+            if ui.button(t("Import")).clicked() {
+                note = Some(match epomaker_core::macros::MacroFile::load(std::path::Path::new(&self.macro_file)) {
+                    Ok(f) => {
+                        *m = f.r#macro;
+                        Ok(format!("{}: {}", t("Loaded"), f.name))
+                    }
+                    Err(e) => Err(e.to_string()),
+                });
+            }
+        });
+        match note {
+            Some(Ok(msg)) => self.toast(ToastKind::Success, msg),
+            Some(Err(e)) => self.toast(ToastKind::Error, e),
+            None => {}
+        }
     }
 
     // ------------------------------------------------------------ settings
@@ -989,6 +1056,11 @@ fn minutes(ui: &mut egui::Ui, label: &str, secs: &mut u16, min: u16, max: u16, a
     changed
 }
 
+fn default_macro_path() -> String {
+    let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).unwrap_or_else(|_| ".".into());
+    std::path::Path::new(&home).join("epomaker-macro.json").to_string_lossy().into_owned()
+}
+
 fn default_backup_path() -> String {
     let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).unwrap_or_else(|_| ".".into());
     std::path::Path::new(&home).join("epomaker-backup.json").to_string_lossy().into_owned()
@@ -996,13 +1068,16 @@ fn default_backup_path() -> String {
 
 #[cfg(feature = "autoshot")]
 impl App {
-    const SHOTS: [&'static str; 10] = [
+    const SHOTS: [&'static str; 13] = [
         "lighting",
         "lighting-ripple",
         "keymap",
         "keymap-search",
         "colors",
         "macros",
+        "lighting-music",
+        "tester",
+        "agent",
         "settings",
         "backup",
         "udev",
@@ -1074,6 +1149,22 @@ impl App {
                     },
                 );
             }
+            "lighting-music" => {
+                self.tab = Tab::Lighting;
+                self.light = LightEffect { mode: LightMode::MusicFollow3, brightness: 4, ..LightEffect::default() };
+            }
+            "tester" => {
+                self.tab = Tab::Tester;
+                let t = ctx.input(|i| i.time);
+                for (dt, code, down) in [(0.0, 0x04, true), (0.08, 0x04, false), (0.1, 0x16, true), (0.18, 0x16, false)]
+                {
+                    self.tester.record_for_demo(t + dt, code, down);
+                }
+                self.tester.record_for_demo(t + 0.2, 0x07, true);
+                self.tester.record_for_demo(t + 0.25, 0x07, false);
+                self.tester.record_for_demo(t + 0.26, 0x07, true);
+            }
+            "agent" => self.tab = Tab::Agent,
             "settings" => self.tab = Tab::Settings,
             "backup" => self.tab = Tab::Backup,
             "udev" => {
@@ -1143,6 +1234,7 @@ impl eframe::App for App {
         #[cfg(feature = "autoshot")]
         self.autoshot(&ctx);
         self.zoom = ctx.zoom_factor();
+        self.heartbeat(&ctx);
         self.poll_worker();
         #[cfg(target_os = "linux")]
         if self.udev.ui(&ctx, self.lang) {
@@ -1203,6 +1295,8 @@ impl eframe::App for App {
                 Tab::Keymap => self.keymap_tab(ui),
                 Tab::Colors => self.colors_tab(ui),
                 Tab::Macros => self.macros_tab(ui),
+                Tab::Tester => self.tester_tab(ui),
+                Tab::Agent => self.agent_tab(ui),
                 Tab::Settings => self.settings_tab(ui),
                 Tab::Backup => self.backup_tab(ui),
             }
@@ -1229,6 +1323,14 @@ impl eframe::App for App {
             light_auto: self.light_auto,
         };
         eframe::set_value(storage, eframe::APP_KEY, &prefs);
+    }
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        if self.last_heartbeat.is_some() {
+            epomaker_host::agent_config::panel_closed();
+        }
     }
 }
 

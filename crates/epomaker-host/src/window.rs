@@ -89,18 +89,12 @@ mod imp {
                     .and_then(|b| b.serve_at("/ActiveWindow", Receiver { current: current.clone() }))
                     .and_then(|b| b.build())
                     .map_err(|e| err(&e))?;
-                // a fixed name lets a new tracker replace a script left behind by a crash
-                let plugin = PLUGIN.to_string();
-                let _ = conn.call_method(
-                    Some("org.kde.KWin"),
-                    "/Scripting",
-                    Some("org.kde.kwin.Scripting"),
-                    "unloadScript",
-                    &(plugin.as_str(),),
-                );
                 let dir = std::env::var_os("XDG_RUNTIME_DIR")
                     .map(std::path::PathBuf::from)
                     .unwrap_or_else(std::env::temp_dir);
+                remove_stale(&conn, &dir);
+                // one script per process (the GUI and the agent may track at the same time)
+                let plugin = format!("{PLUGIN}-{pid}");
                 let script = dir.join(format!("{plugin}.js"));
                 std::fs::write(
                     &script,
@@ -137,6 +131,29 @@ else {{ workspace.clientActivated.connect(report); report(workspace.activeClient
                     return Err(HostError::Window("could not start the KWin script".into()));
                 }
                 Ok(tracker)
+            }
+        }
+
+        /// Unloads scripts left behind by trackers whose process is gone (crash, kill -9).
+        fn remove_stale(conn: &zbus::blocking::Connection, dir: &std::path::Path) {
+            let Ok(entries) = std::fs::read_dir(dir) else { return };
+            for e in entries.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let Some(pid) = name.strip_prefix(&format!("{PLUGIN}-")).and_then(|r| r.strip_suffix(".js")) else {
+                    continue;
+                };
+                if std::path::Path::new("/proc").join(pid).exists() {
+                    continue;
+                }
+                let plugin = format!("{PLUGIN}-{pid}");
+                let _ = conn.call_method(
+                    Some("org.kde.KWin"),
+                    "/Scripting",
+                    Some("org.kde.kwin.Scripting"),
+                    "unloadScript",
+                    &(plugin.as_str(),),
+                );
+                let _ = std::fs::remove_file(e.path());
             }
         }
 

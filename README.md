@@ -24,9 +24,11 @@ on the RongYuan YC500 platform (see [Supported keyboards](#supported-keyboards))
 | Debounce, wireless sleep timers, automatic OS detection | ✅ | ✅ |
 | Full backup / restore to JSON, factory reset | ✅ | ✅ |
 | Demo mode with an emulated keyboard (no hardware needed) | ✅ | ✅ |
-| Music-follow and screen-color effects (streamed from the PC) | | ✅ |
-| CPU load bar on the number row (software effect) | | ✅ |
-| Macro library: export/import macros as files, automatic free slot | | ✅ |
+| Music-follow and screen-color effects (streamed from the PC) | ✅ | ✅ |
+| CPU load bar on the number row (software effect) | ✅ | ✅ |
+| Macro library: export/import macros as files, automatic free slot | ✅ | ✅ |
+| Key tester with switch-chatter detection | ✅ | |
+| Tray agent settings: per-application rules, start with the system | ✅ | |
 | JSON output and shell completions | | ✅ |
 
 The **tray agent** (`epomaker-agent`) runs in the background: switches the onboard profile
@@ -172,8 +174,10 @@ the active profile, battery, live effects and per-application profiles. Rules li
 `app` is the executable name on Windows (`game.exe`) and the window class on Linux
 (`firefox`, `steam_app_570`); `*` is a wildcard. Focus tracking works on Windows, on Linux
 X11 sessions and on KDE Plasma (also Wayland, through a small KWin script). Music needs
-`parec` (PulseAudio/PipeWire) on Linux; the screen color is not available on Wayland. When
-you open the control panel from the tray, the agent lets go of the keyboard until it closes.
+`parec` (PulseAudio/PipeWire) on Linux. On Wayland the screen color uses the desktop's
+screen-sharing portal (asked once) and GStreamer's PipeWire plugin. While the control panel
+is open the agent lets go of the keyboard. The *Tray agent* tab of the panel edits the rules
+and the agent picks up changes by itself.
 
 ## Project layout
 

@@ -1,10 +1,10 @@
 //! The agent's background loop: owns the keyboard and reacts to commands, focus changes
 //! and battery level. The tray front-ends only send [`Command`]s and read [`Status`].
 
-use crate::config::Config;
 use crate::i18n::t;
 use epomaker_core::settings::{Battery, ChargeState};
 use epomaker_core::Keyboard;
+use epomaker_host::agent_config::{self as config, Config};
 use epomaker_host::stream::{LiveEffect, LiveSession};
 use epomaker_host::window::ActiveWindow;
 use std::process::Child;
@@ -58,6 +58,8 @@ pub struct Controller {
     last_battery: Option<Instant>,
     last_focus: Instant,
     battery_warned: bool,
+    config_mtime: Option<std::time::SystemTime>,
+    last_config_check: Instant,
 }
 
 impl Controller {
@@ -73,7 +75,7 @@ impl Controller {
             let mut s = status.lock().unwrap();
             s.per_app = config.per_app_profiles;
             s.per_app_available = window.is_some();
-            s.autostart = crate::autostart::is_enabled();
+            s.autostart = epomaker_host::autostart::is_enabled();
             s.live = config.live_effect;
         }
         Controller {
@@ -88,6 +90,8 @@ impl Controller {
             last_battery: None,
             last_focus: Instant::now(),
             battery_warned: false,
+            config_mtime: Config::modified(),
+            last_config_check: Instant::now(),
         }
     }
 
@@ -108,7 +112,19 @@ impl Controller {
                 Err(RecvTimeoutError::Timeout) => {}
             }
             self.poll_panel();
-            if self.panel.is_some() {
+            self.reload_config();
+            let panel_elsewhere = config::panel_open();
+            if panel_elsewhere != self.status.lock().unwrap().paused && self.panel.is_none() {
+                if panel_elsewhere {
+                    // a control panel started on its own: give it the keyboard
+                    self.live = None;
+                    self.kb = None;
+                } else {
+                    self.last_connect = None;
+                }
+                self.update(|s| s.paused = panel_elsewhere);
+            }
+            if self.panel.is_some() || panel_elsewhere {
                 continue;
             }
             self.ensure_connected();
@@ -142,6 +158,7 @@ impl Controller {
             Command::SetLive(effect) => {
                 self.config.live_effect = effect;
                 self.config.save();
+                self.config_mtime = Config::modified();
                 self.live = None;
                 self.update(|s| {
                     s.live = effect;
@@ -154,19 +171,47 @@ impl Controller {
             Command::SetPerApp(on) => {
                 self.config.per_app_profiles = on;
                 self.config.save();
+                self.config_mtime = Config::modified();
                 self.update(|s| s.per_app = on);
             }
             Command::SetAutostart(on) => {
-                if let Err(e) = crate::autostart::set(on) {
+                if let Err(e) = epomaker_host::autostart::set(on) {
                     log::warn!("autostart: {e}");
                 }
-                let enabled = crate::autostart::is_enabled();
+                let enabled = epomaker_host::autostart::is_enabled();
                 self.update(|s| s.autostart = enabled);
             }
             Command::OpenPanel => self.open_panel(),
-            Command::EditRules => open_in_editor(&crate::config::path()),
+            Command::EditRules => open_in_editor(&config::path()),
             Command::Quit => {}
         }
+    }
+
+    /// Picks up rules edited in the GUI or a text editor.
+    fn reload_config(&mut self) {
+        if self.last_config_check.elapsed() < Duration::from_secs(2) {
+            return;
+        }
+        self.last_config_check = Instant::now();
+        let m = Config::modified();
+        if m == self.config_mtime {
+            return;
+        }
+        self.config_mtime = m;
+        let new = Config::load();
+        let live_changed = new.live_effect != self.config.live_effect;
+        let per_app = new.per_app_profiles;
+        self.config = new;
+        self.update(|s| s.per_app = per_app);
+        if live_changed {
+            let effect = self.config.live_effect;
+            self.live = None;
+            self.update(|s| s.live = effect);
+            if let Some(e) = effect {
+                self.start_live(e);
+            }
+        }
+        log::info!("settings reloaded");
     }
 
     fn ensure_connected(&mut self) {

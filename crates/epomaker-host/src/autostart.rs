@@ -1,13 +1,26 @@
-//! Start the agent when the user logs in.
+//! Start the tray agent when the user logs in.
 //!
 //! Linux: an XDG autostart entry in `~/.config/autostart`. Windows: the per-user `Run` key.
 
-/// Command that starts this agent (the AppImage itself when running from one).
-fn command() -> String {
-    std::env::var("APPIMAGE")
-        .ok()
-        .or_else(|| std::env::current_exe().ok().map(|p| p.to_string_lossy().into_owned()))
-        .unwrap_or_else(|| "epomaker-agent".into())
+/// Command line that starts the agent, found next to the running program (or inside the
+/// AppImage it runs from).
+pub fn agent_command() -> String {
+    if let Ok(appimage) = std::env::var("APPIMAGE") {
+        return format!("\"{appimage}\" agent");
+    }
+    let exe = std::env::current_exe().ok();
+    let name = if cfg!(windows) { "epomaker-agent.exe" } else { "epomaker-agent" };
+    let path = match exe {
+        Some(e) if e.file_stem().is_some_and(|s| s == "epomaker-agent") => e,
+        Some(e) => e.parent().map(|d| d.join(name)).filter(|p| p.exists()).unwrap_or_else(|| name.into()),
+        None => name.into(),
+    };
+    let p = path.to_string_lossy();
+    if p.contains(' ') {
+        format!("\"{p}\"")
+    } else {
+        p.into_owned()
+    }
 }
 
 #[cfg(not(windows))]
@@ -35,8 +48,7 @@ mod imp {
             };
         }
         std::fs::create_dir_all(path.parent().unwrap())?;
-        let exec = super::command();
-        let quoted = if exec.contains(' ') { format!("\"{exec}\"") } else { exec };
+        let quoted = super::agent_command();
         std::fs::write(
             path,
             format!(
@@ -82,7 +94,7 @@ mod imp {
         // SAFETY: registry calls with valid NUL-terminated UTF-16 strings and sizes.
         let status = unsafe {
             if on {
-                let data = wide(&format!("\"{}\"", super::command()));
+                let data = wide(&super::agent_command());
                 RegSetKeyValueW(
                     HKEY_CURRENT_USER,
                     key.as_ptr(),

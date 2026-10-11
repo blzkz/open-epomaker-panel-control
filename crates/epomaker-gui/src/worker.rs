@@ -7,9 +7,11 @@ use epomaker_core::lighting::{LightEffect, Rgb};
 use epomaker_core::macros::Macro;
 use epomaker_core::settings::{Battery, KeyboardOptions, ReportRate, SleepTimes, PROFILES};
 use epomaker_core::{Error, Keyboard};
+use epomaker_host::stream::{Frame, LiveEffect, LiveSession};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 pub type Job = Box<dyn FnOnce(&mut Option<Keyboard>, &Progress) -> Result<Update, Error> + Send>;
 
@@ -90,41 +92,97 @@ pub enum Update {
     Many(Vec<Update>),
 }
 
+/// State of the host-driven effect streamed by the worker between jobs.
+#[derive(Clone, Default)]
+pub struct LiveStatus {
+    pub effect: Option<LiveEffect>,
+    pub frame: Option<Frame>,
+    pub error: Option<String>,
+}
+
+enum Msg {
+    Job(JobInfo, Job),
+    /// Start (or stop with `None`) a host-driven effect; the light effect gives its settings.
+    Live(Option<LiveEffect>, Option<LightEffect>),
+}
+
 pub struct Worker {
-    tx: Sender<(JobInfo, Job)>,
+    tx: Sender<Msg>,
     rx: Receiver<(JobInfo, Result<Update, Error>)>,
     pending: Arc<AtomicUsize>,
     blocking: AtomicUsize,
     progress: Arc<Progress>,
     current: Arc<Mutex<&'static str>>,
+    live: Arc<Mutex<LiveStatus>>,
 }
 
 impl Worker {
     pub fn new(ctx: eframe::egui::Context) -> Worker {
-        let (tx, job_rx) = channel::<(JobInfo, Job)>();
+        let (tx, job_rx) = channel::<Msg>();
         let (res_tx, rx) = channel();
         let pending = Arc::new(AtomicUsize::new(0));
         let progress = Arc::new(Progress::default());
         let current = Arc::new(Mutex::new(""));
-        let (p, prog, cur) = (pending.clone(), progress.clone(), current.clone());
+        let live = Arc::new(Mutex::new(LiveStatus::default()));
+        let (p, prog, cur, lv) = (pending.clone(), progress.clone(), current.clone(), live.clone());
         std::thread::Builder::new()
             .name("keyboard".into())
             .spawn(move || {
                 let mut kb: Option<Keyboard> = None;
-                while let Ok((info, job)) = job_rx.recv() {
-                    *cur.lock().unwrap() = info.label;
-                    prog.set(0, 0);
-                    let r = job(&mut kb, &prog);
-                    prog.set(0, 0);
-                    p.fetch_sub(1, Ordering::SeqCst);
-                    if res_tx.send((info, r)).is_err() {
-                        break;
+                let mut session: Option<LiveSession> = None;
+                let stop_live = |session: &mut Option<LiveSession>, error: Option<String>| {
+                    *session = None;
+                    let mut l = lv.lock().unwrap();
+                    *l = LiveStatus { effect: None, frame: None, error };
+                };
+                loop {
+                    let wait = session.as_ref().map(|s| s.effect.interval()).unwrap_or(Duration::from_secs(3600));
+                    match job_rx.recv_timeout(wait) {
+                        Ok(Msg::Job(info, job)) => {
+                            *cur.lock().unwrap() = info.label;
+                            prog.set(0, 0);
+                            let r = job(&mut kb, &prog);
+                            prog.set(0, 0);
+                            p.fetch_sub(1, Ordering::SeqCst);
+                            if kb.is_none() && session.is_some() {
+                                stop_live(&mut session, None);
+                            }
+                            if res_tx.send((info, r)).is_err() {
+                                break;
+                            }
+                            ctx.request_repaint();
+                        }
+                        Ok(Msg::Live(effect, base)) => {
+                            stop_live(&mut session, None);
+                            if let (Some(effect), Some(k)) = (effect, kb.as_mut()) {
+                                let started = LiveSession::start(effect).and_then(|mut s| {
+                                    s.activate(k, base)?;
+                                    Ok(s)
+                                });
+                                match started {
+                                    Ok(s) => {
+                                        session = Some(s);
+                                        lv.lock().unwrap().effect = Some(effect);
+                                    }
+                                    Err(e) => stop_live(&mut session, Some(e.to_string())),
+                                }
+                            }
+                            ctx.request_repaint();
+                        }
+                        Err(RecvTimeoutError::Timeout) => {
+                            if let (Some(s), Some(k)) = (session.as_mut(), kb.as_mut()) {
+                                match s.step(k) {
+                                    Ok(f) => lv.lock().unwrap().frame = Some(f),
+                                    Err(e) => stop_live(&mut session, Some(e.to_string())),
+                                }
+                            }
+                        }
+                        Err(RecvTimeoutError::Disconnected) => break,
                     }
-                    ctx.request_repaint();
                 }
             })
             .expect("spawn worker");
-        Worker { tx, rx, pending, blocking: AtomicUsize::new(0), progress, current }
+        Worker { tx, rx, pending, blocking: AtomicUsize::new(0), progress, current, live }
     }
 
     /// Queues `job` quietly: only errors are reported.
@@ -161,12 +219,24 @@ impl Worker {
         if info.blocking {
             self.blocking.fetch_add(1, Ordering::SeqCst);
         }
-        if self.tx.send((info, job)).is_err() {
+        if self.tx.send(Msg::Job(info, job)).is_err() {
             self.pending.fetch_sub(1, Ordering::SeqCst);
             if info.blocking {
                 self.blocking.fetch_sub(1, Ordering::SeqCst);
             }
         }
+    }
+
+    /// Starts streaming a host-driven effect (or stops it with `None`).
+    pub fn set_live(&self, effect: Option<LiveEffect>, base: Option<LightEffect>) {
+        if effect.is_none() && self.live.lock().unwrap().effect.is_none() {
+            return;
+        }
+        let _ = self.tx.send(Msg::Live(effect, base));
+    }
+
+    pub fn live(&self) -> LiveStatus {
+        self.live.lock().unwrap().clone()
     }
 
     pub fn busy(&self) -> bool {

@@ -6,8 +6,6 @@
 //! * low-battery notifications and automatic reconnection.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-mod autostart;
-mod config;
 mod controller;
 mod i18n;
 mod icon;
@@ -18,10 +16,14 @@ mod tray_linux;
 mod tray_windows;
 
 use controller::{Controller, Status};
+use epomaker_host::agent_config as config;
 use std::sync::{Arc, Mutex};
 
 fn main() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("warn,epomaker_agent=info,epomaker_host=info,zbus=error"),
+    )
+    .init();
     if std::env::args().any(|a| a == "--help" || a == "-h") {
         println!(
             "epomaker-agent — tray agent for Open Epomaker Panel\n\nSettings: {}\nEnvironment: EPOMAKER_AGENT_DEMO=<model id> uses an emulated keyboard.",
@@ -30,7 +32,7 @@ fn main() {
         return;
     }
     // one agent per user: two would fight over the keyboard
-    let _lock = match single_instance() {
+    let _lock = match config::lock_instance() {
         Ok(l) => l,
         Err(e) => {
             eprintln!("epomaker-agent is already running ({e})");
@@ -59,12 +61,4 @@ fn quit_on_signal(tx: std::sync::mpsc::Sender<controller::Command>) {
     }) {
         log::warn!("signal handler: {e}");
     }
-}
-
-fn single_instance() -> std::io::Result<std::fs::File> {
-    std::fs::create_dir_all(config::dir())?;
-    let file =
-        std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(config::dir().join("agent.lock"))?;
-    file.try_lock().map_err(|e| std::io::Error::other(e.to_string()))?;
-    Ok(file)
 }

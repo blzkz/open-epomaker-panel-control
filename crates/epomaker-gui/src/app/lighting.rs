@@ -6,6 +6,7 @@ use crate::keyboard_view::{self, KeyStyle};
 use crate::preview::{self, Sim, Spot};
 use eframe::egui::{self, Color32, CornerRadius, Rect, RichText, Sense, Slider, Stroke, StrokeKind, Vec2};
 use epomaker_core::lighting::{LightEffect, LightMode, Rgb};
+use epomaker_host::stream::{Frame, LiveEffect};
 
 const PRESETS: [u32; 8] = [0xFF0000, 0xFF8000, 0xFFFF00, 0x00FF00, 0x00FFFF, 0x0000FF, 0xFF00FF, 0xFFFFFF];
 const CARD: Vec2 = Vec2::new(128.0, 72.0);
@@ -58,9 +59,7 @@ impl App {
                         for m in &modes {
                             let selected = self.light.mode == *m;
                             let resp = effect_card(ui, *m, selected, card, &self.light, model, &user_colors, now, lang);
-                            if resp.clicked()
-                                && !selected
-                            {
+                            if resp.clicked() && !selected {
                                 self.light.mode = *m;
                                 self.light.option = 0;
                                 if let Some(c) = model.caps(*m) {
@@ -118,10 +117,7 @@ impl App {
                 });
                 if self.light.mode.needs_host() {
                     ui.add_space(6.0);
-                    ui.colored_label(
-                        ui.visuals().warn_fg_color,
-                        t("The effect needs the host to stream audio/screen data; the keyboard will stay dark without it."),
-                    );
+                    self.live_panel(ui, host_effect(self.light.mode));
                 }
                 if matches!(self.light.mode, LightMode::UserPicture | LightMode::UserColor) {
                     ui.add_space(6.0);
@@ -143,6 +139,11 @@ impl App {
                 if self.light_dirty && !self.light_auto {
                     ui.weak(t("Not applied yet"));
                 }
+                ui.add_space(14.0);
+                ui.separator();
+                ui.label(RichText::new(t("PC effects")).strong());
+                ui.weak(t("Lighting computed on this computer; it runs while the panel is open."));
+                self.live_panel(ui, Some(LiveEffect::CpuLoad));
             });
         });
         if changed {
@@ -157,10 +158,96 @@ impl App {
     pub(super) fn send_light(&mut self) {
         self.light_dirty = false;
         let e = self.light;
+        if let Some(live) = host_effect(e.mode) {
+            // the keyboard only animates these effects while frames keep coming
+            self.worker.set_live(Some(live), Some(e));
+            if let Some(dev) = &mut self.dev {
+                dev.snap.light = Some(e);
+            }
+            return;
+        }
+        self.worker.set_live(None, None);
         self.worker.run("Set lighting", move |kb| {
             kb.set_light(&e)?;
             Ok(super::Update::Light(Some(e)))
         });
+    }
+
+    /// Status, meter and start/stop button of a host-driven effect.
+    fn live_panel(&mut self, ui: &mut egui::Ui, effect: Option<LiveEffect>) {
+        let Some(effect) = effect else { return };
+        let lang = self.lang;
+        let t = |s| tr(lang, s);
+        let status = self.worker.live();
+        let running = status.effect == Some(effect);
+        ui.horizontal(|ui| {
+            let label = match effect {
+                LiveEffect::CpuLoad => t("CPU load bar on the number row"),
+                LiveEffect::Screen => t("Screen color"),
+                LiveEffect::Music(_) => t("Music from this PC"),
+            };
+            ui.label(label);
+            let text = if running { t("Stop") } else { t("Start") };
+            if ui.button(text).clicked() {
+                if running {
+                    self.worker.set_live(None, None);
+                } else {
+                    let base = (effect.light_mode() == self.light.mode).then_some(self.light);
+                    self.worker.set_live(Some(effect), base);
+                }
+            }
+        });
+        if running {
+            match status.frame {
+                Some(Frame::Music(levels)) => level_meter(ui, &levels),
+                Some(Frame::Screen(c)) => {
+                    ui.horizontal(|ui| {
+                        let (rect, _) = ui.allocate_exact_size(Vec2::new(48.0, 18.0), Sense::hover());
+                        ui.painter().rect_filled(rect, 3.0, preview::rgb(c));
+                        ui.weak(format!("#{:06X}", c.0));
+                    });
+                }
+                Some(Frame::Cpu(u)) => {
+                    ui.add(egui::ProgressBar::new(u).text(format!("CPU {:.0}%", u * 100.0)));
+                }
+                None => {
+                    ui.spinner();
+                }
+            }
+        } else if let Some(e) = &status.error {
+            ui.colored_label(ui.visuals().error_fg_color, e);
+        } else if effect.light_mode() == self.light.mode && effect != LiveEffect::CpuLoad {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                t("The effect needs the host to stream audio/screen data; the keyboard will stay dark without it."),
+            );
+        }
+    }
+}
+
+/// Host-driven effect behind a lighting mode, if any.
+fn host_effect(mode: LightMode) -> Option<LiveEffect> {
+    match mode {
+        LightMode::MusicFollow2 | LightMode::MusicFollow3 => Some(LiveEffect::Music(mode)),
+        LightMode::ScreenColor => Some(LiveEffect::Screen),
+        _ => None,
+    }
+}
+
+/// 32 bars showing the band levels sent to the keyboard.
+fn level_meter(ui: &mut egui::Ui, levels: &[u8]) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width().min(300.0), 40.0), Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, 3.0, ui.visuals().extreme_bg_color);
+    let w = rect.width() / levels.len() as f32;
+    for (i, l) in levels.iter().enumerate() {
+        let h = rect.height() * (*l as f32 / epomaker_core::live::MUSIC_MAX_LEVEL as f32);
+        let bar = Rect::from_min_max(
+            egui::pos2(rect.left() + i as f32 * w + 1.0, rect.bottom() - h),
+            egui::pos2(rect.left() + (i + 1) as f32 * w - 1.0, rect.bottom()),
+        );
+        let hue = i as f32 / levels.len() as f32;
+        painter.rect_filled(bar, 1.0, egui::ecolor::Hsva::new(hue * 0.8, 0.8, 0.95, 1.0));
     }
 }
 
