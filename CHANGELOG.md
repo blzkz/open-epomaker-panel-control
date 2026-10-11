@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1 — 2026-10-11
+
+- The project is now licensed under MIT; every package and archive ships the license.
+- App icon (window, Windows executable, Linux desktop entry).
+
 ## 0.1.0 — 2026-10-11
 
 First release. Experimental: verified against the official software, not yet on hardware.

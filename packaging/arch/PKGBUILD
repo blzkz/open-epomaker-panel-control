@@ -1,6 +1,6 @@
 # Maintainer: blzkz
 pkgname=open-epomaker-panel
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc="Open-source control panel for EPOMAKER keyboards (TH80 family)"
 arch=('x86_64')
