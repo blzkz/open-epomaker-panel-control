@@ -1152,8 +1152,10 @@ impl App {
             "lighting-music" => {
                 self.tab = Tab::Lighting;
                 self.light = LightEffect { mode: LightMode::MusicFollow3, brightness: 4, ..LightEffect::default() };
+                self.send_light();
             }
             "tester" => {
+                self.worker.set_live(None, None);
                 self.tab = Tab::Tester;
                 let t = ctx.input(|i| i.time);
                 for (dt, code, down) in [(0.0, 0x04, true), (0.08, 0x04, false), (0.1, 0x16, true), (0.18, 0x16, false)]
