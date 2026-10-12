@@ -3,7 +3,8 @@
 
 use super::App;
 use crate::i18n::tr;
-use eframe::egui::{self, ComboBox, RichText, Slider};
+use crate::theme;
+use eframe::egui::{self, ComboBox, Slider};
 use epomaker_core::lighting::LightMode;
 use epomaker_host::agent_config::{self, Config, Rule};
 use epomaker_host::stream::LiveEffect;
@@ -38,36 +39,45 @@ impl App {
         let state = &mut self.agent;
         let config = state.config.get_or_insert_with(Config::load);
 
-        ui.label(RichText::new(t("Tray agent")).heading());
-        ui.weak(t("Runs in the background: switches profiles when you change application, keeps the PC effects running and warns when the battery is low."));
-        ui.add_space(8.0);
+        let pal = theme::palette(ui);
         let running = agent_config::agent_running();
+        let mut changed = false;
+        egui::ScrollArea::vertical().show(ui, |ui| {
+        theme::card(ui, t("Status"), |ui| {
         ui.horizontal(|ui| {
             if running {
-                ui.colored_label(egui::Color32::from_rgb(60, 190, 90), format!("● {}", t("Running")));
+                theme::pill(ui, &format!("{} {}", theme::icon::CHECK_CIRCLE, t("Running")), pal.ok);
             } else {
-                ui.weak(format!("○ {}", t("Not running")));
-                if ui.button(t("Start the agent")).clicked() {
+                theme::pill(ui, &format!("{} {}", theme::icon::X_CIRCLE, t("Not running")), pal.text_dim);
+                if theme::primary_button(ui, true, t("Start the agent")).clicked() {
                     state.message = Some(match start_agent() {
                         Ok(()) => t("Agent started").to_string(),
                         Err(e) => format!("{}: {e}", t("Error")),
                     });
                 }
             }
-            let mut auto = epomaker_host::autostart::is_enabled();
-            if ui.checkbox(&mut auto, t("Start with the system")).changed() {
-                if let Err(e) = epomaker_host::autostart::set(auto) {
-                    state.message = Some(e.to_string());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let mut auto = epomaker_host::autostart::is_enabled();
+                if theme::toggle(ui, &mut auto).changed() {
+                    if let Err(e) = epomaker_host::autostart::set(auto) {
+                        state.message = Some(e.to_string());
+                    }
                 }
-            }
+                ui.label(t("Start with the system"));
+            });
         });
-        ui.add_space(8.0);
-        ui.separator();
+        });
+        ui.add_space(12.0);
 
-        let mut changed = false;
-        changed |= ui.checkbox(&mut config.per_app_profiles, t("Per-application profiles")).changed();
-        ui.weak(t("Windows: the program file (game.exe). Linux: the window class (firefox, steam_app_570). * matches anything."));
-        ui.add_space(4.0);
+        theme::card(ui, "", |ui| {
+        changed |= theme::toggle_row(
+            ui,
+            &mut config.per_app_profiles,
+            t("Per-application profiles"),
+            t("Windows: the program file (game.exe). Linux: the window class (firefox, steam_app_570). * matches anything."),
+        )
+        .changed();
+        ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.label(t("Other applications"));
             let label = |p: Option<u8>| match p {
@@ -82,7 +92,7 @@ impl App {
         });
         ui.add_space(4.0);
         let mut remove = None;
-        egui::Grid::new("agent_rules").striped(true).num_columns(3).spacing([10.0, 6.0]).show(ui, |ui| {
+        egui::Grid::new("agent_rules").num_columns(3).spacing([10.0, 6.0]).show(ui, |ui| {
             ui.strong(t("Application"));
             ui.strong(t("Profile"));
             ui.label("");
@@ -94,7 +104,7 @@ impl App {
                         changed |= ui.selectable_value(&mut rule.profile, p, p.to_string()).changed();
                     }
                 });
-                if ui.small_button("🗑").on_hover_text(t("Delete")).clicked() {
+                if ui.small_button(theme::icon::TRASH).on_hover_text(t("Delete")).clicked() {
                     remove = Some(i);
                 }
                 ui.end_row();
@@ -105,7 +115,7 @@ impl App {
             changed = true;
         }
         ui.horizontal(|ui| {
-            if ui.button(t("Add rule")).clicked() {
+            if ui.button(format!("{} {}", theme::icon::PLUS, t("Add rule"))).clicked() {
                 config.rules.push(Rule { app: String::new(), profile: 2 });
                 changed = true;
             }
@@ -128,7 +138,7 @@ impl App {
                     }
                 }
                 None => {
-                    if ui.button(t("Detect application (5 s)")).clicked() {
+                    if ui.button(format!("{} {}", theme::icon::CROSSHAIR, t("Detect application (5 s)"))).clicked() {
                         let (tx, rx) = channel();
                         std::thread::spawn(move || {
                             let r = epomaker_host::window::tracker().map_err(|e| e.to_string()).and_then(|mut w| {
@@ -142,8 +152,9 @@ impl App {
                 }
             }
         });
-        ui.add_space(8.0);
-        ui.separator();
+        });
+        ui.add_space(12.0);
+        theme::card(ui, t("Other"), |ui| {
         egui::Grid::new("agent_misc").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
             ui.label(t("Low battery warning"));
             changed |= ui.add(Slider::new(&mut config.battery_warning_percent, 0..=50).suffix(" %")).changed();
@@ -157,12 +168,13 @@ impl App {
             });
             ui.end_row();
         });
+        });
         if changed {
             state.dirty = true;
         }
-        ui.add_space(8.0);
+        ui.add_space(12.0);
         ui.horizontal(|ui| {
-            if ui.add_enabled(state.dirty, egui::Button::new(RichText::new(t("Save")).strong())).clicked() {
+            if theme::primary_button(ui, state.dirty, t("Save")).clicked() {
                 config.rules.retain(|r| !r.app.trim().is_empty());
                 config.save();
                 state.dirty = false;
@@ -177,6 +189,7 @@ impl App {
         if let Some(m) = &state.message {
             ui.label(m);
         }
+        });
     }
 }
 

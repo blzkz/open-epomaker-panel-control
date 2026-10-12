@@ -9,6 +9,8 @@ mod tester;
 use crate::editors::{self, ActionEditor, Recorder};
 use crate::i18n::{tr, Lang};
 use crate::keyboard_view::{self, KeyStyle};
+use crate::legends::{self, Legend};
+use crate::theme::{self, icon, Accent};
 use crate::worker::{snapshot, JobInfo, Snapshot, Update, Worker};
 use colors::ColorsState;
 use eframe::egui::{self, Color32, ComboBox, RichText, Slider};
@@ -37,17 +39,6 @@ enum Tab {
 }
 
 impl Tab {
-    const ALL: [Tab; 9] = [
-        Tab::Lighting,
-        Tab::Keymap,
-        Tab::Colors,
-        Tab::Macros,
-        Tab::Tester,
-        Tab::Agent,
-        Tab::Settings,
-        Tab::Backup,
-        Tab::Diagnostics,
-    ];
     fn label(self) -> &'static str {
         match self {
             Tab::Lighting => "Lighting",
@@ -61,7 +52,52 @@ impl Tab {
             Tab::Diagnostics => "Diagnostics",
         }
     }
+
+    fn icon(self) -> &'static str {
+        match self {
+            Tab::Lighting => icon::LIGHTBULB,
+            Tab::Keymap => icon::KEYBOARD,
+            Tab::Colors => icon::PALETTE,
+            Tab::Macros => icon::LIGHTNING,
+            Tab::Tester => icon::CURSOR_CLICK,
+            Tab::Agent => icon::TRAY,
+            Tab::Settings => icon::SLIDERS_HORIZONTAL,
+            Tab::Backup => icon::FLOPPY_DISK,
+            Tab::Diagnostics => icon::STETHOSCOPE,
+        }
+    }
+
+    /// One line under the page title.
+    fn subtitle(self) -> &'static str {
+        match self {
+            Tab::Lighting => "Backlight effect, speed, brightness and color.",
+            Tab::Keymap => "Click a key to choose what it sends, for each profile and Fn layer.",
+            Tab::Colors => "Paint the custom picture key by key.",
+            Tab::Macros => "Record or edit key sequences, then assign them to keys.",
+            Tab::Tester => {
+                "Press keys while this window is focused. It shows what the computer receives, after your remapping."
+            }
+            Tab::Agent => {
+                "Runs in the background: switches profiles when you change application, keeps the PC effects running and warns when the battery is low."
+            }
+            Tab::Settings => "Polling rate, keyboard options, debounce and sleep timers.",
+            Tab::Backup => "Save the whole configuration of the keyboard to a file, or load one.",
+            Tab::Diagnostics => "Check that this panel works with your keyboard, and gather data for a bug report.",
+        }
+    }
 }
+
+/// A section of the sidebar.
+struct NavGroup {
+    label: &'static str,
+    tabs: &'static [Tab],
+}
+
+const NAV: [NavGroup; 3] = [
+    NavGroup { label: "Device", tabs: &[Tab::Lighting, Tab::Colors, Tab::Keymap, Tab::Macros] },
+    NavGroup { label: "Tools", tabs: &[Tab::Tester, Tab::Agent, Tab::Backup] },
+    NavGroup { label: "System", tabs: &[Tab::Settings, Tab::Diagnostics] },
+];
 
 /// What the device selector points at.
 #[derive(Clone, PartialEq)]
@@ -88,9 +124,9 @@ impl SavedTarget {
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 enum ThemeChoice {
-    #[default]
     System,
     Light,
+    #[default]
     Dark,
 }
 
@@ -112,6 +148,8 @@ impl ThemeChoice {
     }
 }
 
+const STYLE_VERSION: u8 = 1;
+
 const ZOOMS: [f32; 6] = [0.8, 0.9, 1.0, 1.1, 1.25, 1.5];
 
 /// Preferences kept between runs (eframe storage).
@@ -126,18 +164,26 @@ struct Prefs {
     light_auto: bool,
     /// Read back every write from the keyboard.
     verify: bool,
+    accent: Accent,
+    legend: Legend,
+    /// 0: saved before the 0.4 restyle (the theme default changed to dark).
+    #[serde(default)]
+    style_version: u8,
 }
 
 impl Default for Prefs {
     fn default() -> Self {
         Prefs {
             lang: None,
-            theme: ThemeChoice::System,
+            theme: ThemeChoice::Dark,
             zoom: 1.0,
             last_device: None,
             recent_colors: vec![],
             verify: true,
             light_auto: true,
+            accent: Accent::default(),
+            legend: Legend::default(),
+            style_version: STYLE_VERSION,
         }
     }
 }
@@ -164,6 +210,8 @@ struct DeviceState {
 pub struct App {
     lang: Lang,
     theme: ThemeChoice,
+    accent: Accent,
+    legend: Legend,
     zoom: f32,
     worker: Worker,
     tab: Tab,
@@ -235,10 +283,17 @@ impl App {
         let fresh = autoshot.is_some();
         #[cfg(not(feature = "autoshot"))]
         let fresh = false;
-        let prefs: Prefs = match cc.storage {
+        let mut prefs: Prefs = match cc.storage {
             Some(s) if !fresh => eframe::get_value(s, eframe::APP_KEY).unwrap_or_default(),
             _ => Prefs::default(),
         };
+        if prefs.style_version < STYLE_VERSION {
+            prefs.theme = ThemeChoice::Dark;
+        }
+        theme::install_fonts(&cc.egui_ctx);
+        theme::apply(&cc.egui_ctx, prefs.accent);
+        legends::set(prefs.legend);
+        crate::rawkeys::set_context(&cc.egui_ctx);
         let zoom = if ZOOMS.iter().any(|z| (z - prefs.zoom).abs() < 0.01) { prefs.zoom } else { 1.0 };
         let theme = if fresh { ThemeChoice::Dark } else { prefs.theme };
         cc.egui_ctx.set_theme(theme.egui());
@@ -248,6 +303,8 @@ impl App {
         let mut app = App {
             lang: prefs.lang.unwrap_or_else(Lang::detect),
             theme,
+            accent: prefs.accent,
+            legend: prefs.legend,
             zoom,
             worker,
             tab: Tab::Lighting,
@@ -546,65 +603,130 @@ impl App {
 
     // ------------------------------------------------------------ top bar
 
-    fn top_bar(&mut self, ui: &mut egui::Ui) {
+    fn header(&mut self, ui: &mut egui::Ui) {
+        let p = theme::palette(ui);
+        let lang = self.lang;
+        let t = |s| tr(lang, s);
         ui.horizontal(|ui| {
-            ui.heading("⌨ Open Epomaker Panel");
-            ui.separator();
-            ui.label(self.t("Keyboard"));
-            let demo_models: Vec<i64> = {
-                let db = Database::get();
-                let mut v: Vec<(i64, &str)> = Vec::new();
-                for d in db.devices.iter().filter(|d| !d.dongle) {
-                    if !v.iter().any(|(_, n)| *n == d.name) {
-                        v.push((d.id, &d.name));
+            ui.spacing_mut().item_spacing.x = 12.0;
+            // device badge, name and connection
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(46.0, 46.0), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 11.0, p.accent.gamma_multiply(0.15));
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                icon::KEYBOARD,
+                egui::FontId::proportional(26.0),
+                p.accent,
+            );
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 1.0;
+                ui.add_space(2.0);
+                let (name, line, dot) = match &self.dev {
+                    Some(d) => {
+                        let s = &d.snap;
+                        let link = if s.emulated {
+                            t("Demo, no hardware")
+                        } else if s.info.dongle {
+                            t("2.4 GHz receiver")
+                        } else {
+                            "USB"
+                        };
+                        let legend = t(legends::current().label());
+                        let line = format!("{} · {link} · FW {:04x} · {legend}", s.info.company, s.firmware);
+                        (s.info.display_name.to_uppercase(), line, if s.emulated { p.warn } else { p.ok })
                     }
-                }
-                v.into_iter().map(|(id, _)| id).collect()
-            };
-            let lang = self.lang;
-            let label = |t: &Option<Target>| match t {
-                Some(Target::Hid(c)) => format!("{} {:04x}:{:04x} (if{})", c.product, c.vid, c.pid, c.interface),
-                Some(Target::Demo(id)) => {
-                    let d = Database::get().device_by_id(*id);
-                    let (name, key) = d.map(|d| (d.display_name.as_str(), d.name.as_str())).unwrap_or_default();
-                    format!("{name} ({key}) — {}", tr(lang, "demo, no hardware"))
-                }
-                None => tr(lang, "No keyboard connected").to_string(),
-            };
-            let current = label(&self.target);
-            let mut new_target = None;
-            let busy = self.worker.busy();
-            ui.add_enabled_ui(!self.worker.blocked(), |ui| {
-                ComboBox::from_id_salt("device").width(330.0).selected_text(current).show_ui(ui, |ui| {
-                    for c in &self.candidates {
-                        let t = Some(Target::Hid(c.clone()));
-                        if ui.selectable_label(self.target == t, label(&t)).clicked() {
-                            new_target = t;
-                        }
-                    }
-                    if !self.candidates.is_empty() {
-                        ui.separator();
-                    }
-                    for id in &demo_models {
-                        let t = Some(Target::Demo(*id));
-                        if ui.selectable_label(self.target == t, label(&t)).clicked() {
-                            new_target = t;
-                        }
-                    }
+                    None if self.worker.busy() => (t("Connecting…").to_string(), String::new(), p.warn),
+                    None => (
+                        t("No keyboard connected").to_string(),
+                        t("Plug in a keyboard, or pick a demo model on the right.").to_string(),
+                        p.text_dim,
+                    ),
+                };
+                ui.label(RichText::new(name).size(22.0).family(theme::display()).color(p.text_strong));
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    theme::dot(ui, dot);
+                    ui.label(RichText::new(line).small().color(p.text_dim));
                 });
             });
-            if let Some(t) = new_target {
-                self.target = Some(t);
-            }
-            if ui.button("⟳").on_hover_text(self.t("Look for keyboards again")).clicked() {
-                self.refresh_devices();
-            }
-            if ui.add_enabled(!busy && self.target.is_some(), egui::Button::new(self.t("Connect"))).clicked() {
-                if let Some(t) = self.target.clone() {
-                    self.connect(t);
+            if let Some(d) = &self.dev {
+                ui.add_space(8.0);
+                let b = d.snap.battery;
+                let glyph = match (b.state, b.percent) {
+                    (ChargeState::Charging, _) => icon::BATTERY_CHARGING,
+                    (_, 75..) => icon::BATTERY_FULL,
+                    (_, 50..) => icon::BATTERY_HIGH,
+                    (_, 25..) => icon::BATTERY_MEDIUM,
+                    (_, 10..) => icon::BATTERY_LOW,
+                    _ => icon::BATTERY_WARNING,
+                };
+                let color = match b.percent {
+                    0..=15 => p.error,
+                    16..=30 => p.warn,
+                    _ => p.ok,
+                };
+                let state = match b.state {
+                    ChargeState::Discharging => t("discharging"),
+                    ChargeState::Charging => t("charging"),
+                    ChargeState::Full => t("full"),
+                };
+                let r = theme::pill(ui, &format!("{glyph} {}%", b.percent), color)
+                    .interact(egui::Sense::click())
+                    .on_hover_text(format!("{} ({state}). {}", t("Battery"), t("Click to read it again.")));
+                if r.clicked() {
+                    self.worker.run("Read battery", |kb| Ok(Update::Battery(kb.battery()?)));
+                }
+                // active profile
+                ui.add_space(4.0);
+                ui.label(RichText::new(t("Profile")).color(p.text_dim));
+                let mut profile = d.snap.profile;
+                let items: Vec<(u8, String)> = (0..3u8).map(|i| (i, format!("{}", i + 1))).collect();
+                let enabled = !self.worker.busy();
+                let changed = ui.add_enabled_ui(enabled, |ui| theme::segmented(ui, &mut profile, &items)).inner;
+                if changed {
+                    self.set_profile(profile);
                 }
             }
-            if self.dev.is_some() && ui.add_enabled(!busy, egui::Button::new(self.t("Disconnect"))).clicked() {
+            if self.worker.busy() {
+                ui.add_space(8.0);
+                let what = self.t(self.worker.current()).to_string();
+                match self.worker.progress() {
+                    Some(f) => {
+                        ui.add(egui::ProgressBar::new(f).desired_width(120.0).desired_height(6.0).fill(p.accent));
+                    }
+                    None => {
+                        ui.add(egui::Spinner::new().color(p.accent));
+                    }
+                }
+                ui.label(RichText::new(format!("{what}…")).color(p.text_dim));
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                self.preferences_menu(ui);
+                ui.add_space(6.0);
+                self.device_picker(ui);
+            });
+        });
+    }
+
+    fn set_profile(&mut self, profile: u8) {
+        if let Some(d) = &mut self.dev {
+            d.snap.profile = profile;
+        }
+        self.worker.run("Set profile", move |kb| {
+            kb.set_profile(profile)?;
+            Ok(Update::Profile(kb.profile()?))
+        });
+    }
+
+    /// Device list, rescan and connect / disconnect (right side of the header).
+    fn device_picker(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
+        let busy = self.worker.busy();
+        if self.dev.is_some() {
+            let b = egui::Button::new(format!("{} {}", icon::PLUGS, tr(lang, "Disconnect")));
+            if ui.add_enabled(!busy, b).clicked() {
                 self.worker.run_raw(
                     JobInfo::quiet("Disconnect"),
                     Box::new(|k: &mut Option<Keyboard>, _| {
@@ -613,43 +735,156 @@ impl App {
                     }),
                 );
             }
-            if busy {
-                ui.separator();
-                let what = self.t(self.worker.current()).to_string();
-                match self.worker.progress() {
-                    Some(f) => {
-                        ui.add(egui::ProgressBar::new(f).desired_width(140.0).show_percentage());
-                    }
-                    None => {
-                        ui.spinner();
+        }
+        let differs = self.dev.is_none() || self.connected != self.target;
+        if differs && theme::primary_button(ui, !busy && self.target.is_some(), tr(lang, "Connect")).clicked() {
+            if let Some(t) = self.target.clone() {
+                self.connect(t);
+            }
+        }
+        if theme::icon_button(ui, icon::ARROWS_CLOCKWISE, tr(lang, "Look for keyboards again")).clicked() {
+            self.refresh_devices();
+        }
+        let demo_models: Vec<i64> = {
+            let db = Database::get();
+            let mut v: Vec<(i64, &str)> = Vec::new();
+            for d in db.devices.iter().filter(|d| !d.dongle) {
+                if !v.iter().any(|(_, n)| *n == d.name) {
+                    v.push((d.id, &d.name));
+                }
+            }
+            v.into_iter().map(|(id, _)| id).collect()
+        };
+        let label = |t: &Option<Target>| match t {
+            Some(Target::Hid(c)) => {
+                // Windows reports a generic "(Standard system devices)" product name
+                let product = c.product.trim();
+                let name =
+                    if product.is_empty() || product.starts_with('(') { tr(lang, "USB keyboard") } else { product };
+                format!("{} {name} · {:04x}:{:04x}", icon::USB, c.vid, c.pid)
+            }
+            Some(Target::Demo(id)) => {
+                let d = Database::get().device_by_id(*id);
+                let (name, key) = d.map(|d| (d.display_name.as_str(), d.name.as_str())).unwrap_or_default();
+                format!("{} {name} ({key}) · {}", icon::FLASK, tr(lang, "demo, no hardware"))
+            }
+            None => tr(lang, "No keyboard connected").to_string(),
+        };
+        let current = label(&self.target);
+        let mut new_target = None;
+        ui.add_enabled_ui(!self.worker.blocked(), |ui| {
+            ComboBox::from_id_salt("device").width(260.0).truncate().selected_text(current).show_ui(ui, |ui| {
+                for c in &self.candidates {
+                    let t = Some(Target::Hid(c.clone()));
+                    if ui.selectable_label(self.target == t, label(&t)).clicked() {
+                        new_target = t;
                     }
                 }
-                ui.label(RichText::new(format!("{what}…")).weak());
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| self.preferences_menu(ui));
+                if !self.candidates.is_empty() {
+                    ui.separator();
+                }
+                for id in &demo_models {
+                    let t = Some(Target::Demo(*id));
+                    if ui.selectable_label(self.target == t, label(&t)).clicked() {
+                        new_target = t;
+                    }
+                }
+            });
         });
+        if let Some(t) = new_target {
+            self.target = Some(t);
+        }
     }
 
     fn preferences_menu(&mut self, ui: &mut egui::Ui) {
         let lang = self.lang;
         let t = |s| tr(lang, s);
-        ui.menu_button(format!("⚙ {}", t("Preferences")), |ui| {
-            ui.label(RichText::new(t("Language")).strong());
+        let button = RichText::new(icon::GEAR_SIX).size(19.0);
+        ui.menu_button(button, |ui| {
+            ui.set_min_width(220.0);
+            theme::section_label(ui, t("Language"));
             ui.radio_value(&mut self.lang, Lang::En, "English");
             ui.radio_value(&mut self.lang, Lang::Es, "Español");
             ui.separator();
-            ui.label(RichText::new(t("Theme")).strong());
+            theme::section_label(ui, t("Theme"));
             for th in ThemeChoice::ALL {
                 if ui.radio_value(&mut self.theme, th, t(th.label())).changed() {
                     ui.ctx().set_theme(th.egui());
                 }
             }
             ui.separator();
-            ui.label(RichText::new(t("Interface size")).strong());
-            for z in ZOOMS {
-                if ui.radio(self.zoom == z, format!("{:.0} %", z * 100.0)).clicked() {
-                    self.zoom = z;
-                    ui.ctx().set_zoom_factor(z);
+            theme::section_label(ui, t("Accent color"));
+            ui.horizontal(|ui| {
+                for a in Accent::ALL {
+                    let (rect, resp) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
+                    ui.painter().circle_filled(rect.center(), 9.0, a.color());
+                    if self.accent == a {
+                        ui.painter().circle_stroke(
+                            rect.center(),
+                            11.5,
+                            egui::Stroke::new(2.0, ui.visuals().strong_text_color()),
+                        );
+                    }
+                    if resp.on_hover_text(t(a.label())).clicked() {
+                        self.accent = a;
+                        theme::apply(ui.ctx(), a);
+                    }
+                }
+            });
+            ui.separator();
+            theme::section_label(ui, t("Keycap legends"));
+            let detected = legends::detect().map(|l| t(l.label()).to_string());
+            for l in Legend::ALL {
+                let mut text = t(l.label()).to_string();
+                if l == Legend::Auto {
+                    text = format!("{text} ({})", detected.as_deref().unwrap_or(t("not detected")));
+                }
+                if ui.radio_value(&mut self.legend, l, text).changed() {
+                    legends::set(l);
+                }
+            }
+            ui.separator();
+            theme::section_label(ui, t("Interface size"));
+            ui.horizontal_wrapped(|ui| {
+                for z in ZOOMS {
+                    if ui.selectable_label(self.zoom == z, format!("{:.0}%", z * 100.0)).clicked() {
+                        self.zoom = z;
+                        ui.ctx().set_zoom_factor(z);
+                    }
+                }
+            });
+        });
+    }
+
+    /// Central area when no keyboard is connected.
+    fn empty_state(&mut self, ui: &mut egui::Ui) {
+        let p = theme::palette(ui);
+        ui.vertical_centered(|ui| {
+            ui.add_space((ui.available_height() * 0.28).max(20.0));
+            if self.worker.busy() {
+                ui.add(egui::Spinner::new().size(36.0).color(p.accent));
+                return;
+            }
+            let glyph = if self.unplugged { icon::PLUGS } else { icon::KEYBOARD };
+            ui.label(RichText::new(glyph).size(64.0).color(p.text_dim.gamma_multiply(0.6)));
+            ui.add_space(8.0);
+            let title = if self.unplugged { "Keyboard disconnected" } else { "No keyboard connected" };
+            ui.label(
+                RichText::new(self.t(title).to_uppercase()).size(24.0).family(theme::display()).color(p.text_strong),
+            );
+            let hint = if self.unplugged {
+                "It will reconnect automatically when plugged in again."
+            } else {
+                "Plug in a keyboard, or pick a demo model on the right."
+            };
+            ui.label(RichText::new(self.t(hint)).color(p.text_dim));
+            ui.add_space(14.0);
+            if !self.candidates.is_empty() || self.target.is_some() {
+                let enabled = self.target.is_some();
+                if theme::primary_button(ui, enabled, self.t("Connect")).clicked() {
+                    if let Some(t) = self.target.clone() {
+                        self.connect(t);
+                    }
                 }
             }
         });
@@ -707,54 +942,54 @@ impl App {
         let fn_layers = dev.snap.info.fn_layers;
         let active = dev.snap.profile;
         let lang = self.lang;
-        ui.horizontal(|ui| {
-            ui.label(tr(lang, "Layer"));
-            for p in 0..3u8 {
-                let mut text = format!("{} {}", tr(lang, "Profile"), p + 1);
-                if p == active {
-                    text += " *";
-                }
-                if ui.selectable_value(&mut self.layer, Layer::Profile(p), text).changed() {
-                    self.editor = None;
-                }
-            }
-            for f in 0..fn_layers {
-                let text = if fn_layers > 1 {
-                    format!("{} {}", tr(lang, "Fn layer"), f + 1)
-                } else {
-                    tr(lang, "Fn layer").to_string()
-                };
-                if ui.selectable_value(&mut self.layer, Layer::Fn(f), text).changed() {
-                    self.editor = None;
-                }
-            }
-        });
+        let mut items: Vec<(Layer, String)> = (0..3u8)
+            .map(|p| {
+                let mark = if p == active { " •" } else { "" };
+                (Layer::Profile(p), format!("{} {}{mark}", tr(lang, "Profile"), p + 1))
+            })
+            .collect();
+        for f in 0..fn_layers {
+            let text = if fn_layers > 1 {
+                format!("{} {}", tr(lang, "Fn layer"), f + 1)
+            } else {
+                tr(lang, "Fn layer").to_string()
+            };
+            items.push((Layer::Fn(f), text));
+        }
+        if theme::segmented(ui, &mut self.layer, &items) {
+            self.editor = None;
+        }
     }
 
     fn keymap_tab(&mut self, ui: &mut egui::Ui) {
         let busy = self.worker.busy();
         ui.horizontal(|ui| {
             self.layer_selector(ui);
-            ui.separator();
             let layer = self.layer;
-            ui.add_enabled_ui(!busy, |ui| {
-                if ui.button(self.t("Reset layer to factory")).clicked() {
-                    self.worker.run_notify("Reset layer", move |kb| {
-                        kb.reset_layer(layer)?;
-                        Ok(Update::Layer(layer, kb.read_layer(layer)?))
-                    });
-                }
-                if ui.button(self.t("Read from keyboard")).clicked() {
-                    self.worker.run("Read layer", move |kb| Ok(Update::Layer(layer, kb.read_layer(layer)?)));
-                }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_enabled_ui(!busy, |ui| {
+                    if ui.button(format!("{} {}", icon::DOWNLOAD_SIMPLE, self.t("Read from keyboard"))).clicked() {
+                        self.worker.run("Read layer", move |kb| Ok(Update::Layer(layer, kb.read_layer(layer)?)));
+                    }
+                    if ui
+                        .button(format!("{} {}", icon::ARROW_COUNTER_CLOCKWISE, self.t("Reset layer to factory")))
+                        .clicked()
+                    {
+                        self.worker.run_notify("Reset layer", move |kb| {
+                            kb.reset_layer(layer)?;
+                            Ok(Update::Layer(layer, kb.read_layer(layer)?))
+                        });
+                    }
+                });
             });
         });
+        ui.add_space(8.0);
         let Some(dev) = &self.dev else { return };
         let model = dev.snap.model;
         let Some(matrix) = dev.layers.get(&self.layer).cloned() else { return };
         let selected = self.selected;
         let lang = self.lang;
-        let visuals = ui.visuals().clone();
+        let pal = theme::palette(ui);
         let max_h = (ui.available_height() * 0.5).max(180.0);
         let resp = keyboard_view::show(ui, model, max_h, |k| {
             let entry = matrix.entries.get(k.idx).copied().unwrap_or_default();
@@ -762,9 +997,9 @@ impl App {
             let changed = entry != default;
             let action = KeyAction::from_bytes(entry);
             KeyStyle {
-                fill: if changed { Color32::from_rgb(40, 90, 160) } else { visuals.widgets.inactive.bg_fill },
+                fill: if changed { pal.accent_fill } else { pal.control },
                 text: if changed { editors::short(action) } else { k.label.clone() },
-                text_color: if changed { Color32::WHITE } else { visuals.text_color() },
+                text_color: if changed { pal.on_accent } else { pal.text },
                 highlight: selected == Some(k.idx),
                 tooltip: format!("{} -> {}", k.label.replace('\n', " "), editors::describe(action, lang)),
             }
@@ -775,35 +1010,52 @@ impl App {
             self.editor =
                 Some(ActionEditor::new(KeyAction::from_bytes(entry), model.default_entry(i).unwrap_or_default()));
         }
-        ui.add_space(6.0);
+        ui.add_space(12.0);
         let used = dev.snap.used_slots.clone();
         let layer = self.layer;
-        match (self.selected, &mut self.editor) {
-            (Some(i), Some(ed)) => {
-                let label = model.key_for_matrix_index(i).map(|k| k.label.replace('\n', " ")).unwrap_or_default();
-                let entry = matrix.entries.get(i).copied().unwrap_or_default();
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(label).heading().strong());
-                    ui.label(RichText::new(format!(
-                        "{}: {}",
-                        tr(lang, "now"),
-                        editors::describe(KeyAction::from_bytes(entry), lang)
-                    )));
-                });
-                let default = model.default_entry(i).unwrap_or_default();
-                if ed.ui(ui, lang, model.macro_slots, &used, default, !busy) {
-                    if let Some(action) = ed.action(default) {
-                        self.worker.run_notify("Set key", move |kb| {
-                            kb.set_key(layer, i, action)?;
-                            Ok(Update::Layer(layer, kb.read_layer(layer)?))
-                        });
+        egui::ScrollArea::vertical().id_salt("key_editor").show(ui, |ui| {
+            theme::card(ui, "", |ui| match (self.selected, &mut self.editor) {
+                (Some(i), Some(ed)) => {
+                    let label = model
+                        .key_for_matrix_index(i)
+                        .map(|k| legends::label(k.code, &k.label).replace('\n', " "))
+                        .unwrap_or_default();
+                    let entry = matrix.entries.get(i).copied().unwrap_or_default();
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(label.to_uppercase())
+                                .size(20.0)
+                                .family(theme::display())
+                                .color(pal.text_strong),
+                        );
+                        ui.label(
+                            RichText::new(format!(
+                                "{}: {}",
+                                tr(lang, "now"),
+                                editors::describe(KeyAction::from_bytes(entry), lang)
+                            ))
+                            .color(pal.text_dim),
+                        );
+                    });
+                    ui.add_space(4.0);
+                    let default = model.default_entry(i).unwrap_or_default();
+                    if ed.ui(ui, lang, model.macro_slots, &used, default, !busy) {
+                        if let Some(action) = ed.action(default) {
+                            self.worker.run_notify("Set key", move |kb| {
+                                kb.set_key(layer, i, action)?;
+                                Ok(Update::Layer(layer, kb.read_layer(layer)?))
+                            });
+                        }
                     }
                 }
-            }
-            _ => {
-                ui.label(tr(lang, "Select a key on the keyboard."));
-            }
-        }
+                _ => {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(icon::CURSOR_CLICK).size(20.0).color(pal.accent));
+                        ui.label(RichText::new(tr(lang, "Select a key on the keyboard.")).color(pal.text_dim));
+                    });
+                }
+            });
+        });
     }
 
     // ------------------------------------------------------------ macros
@@ -815,119 +1067,165 @@ impl App {
         let lang = self.lang;
         let busy = self.worker.busy();
         let t = |s| tr(lang, s);
-        egui::Panel::left("macro_slots").resizable(false).default_size(130.0).show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for s in 0..slots {
-                    let text = editors::slot_label(s, &used, lang);
-                    if ui.selectable_label(self.macro_slot == s, text).clicked() {
-                        self.macro_slot = s;
-                        self.recorder = None;
-                        if !self.macros.contains_key(&s) {
-                            self.worker.run("Read macro", move |kb| Ok(Update::Macro(s, kb.read_macro(s)?)));
+        let pal = theme::palette(ui);
+        let height = ui.available_height();
+        let mut note: Option<Result<String, String>> = None;
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 14.0;
+            ui.allocate_ui_with_layout(egui::vec2(180.0, height), egui::Layout::top_down(egui::Align::Min), |ui| {
+                theme::card(ui, t("Slots"), |ui| {
+                    egui::ScrollArea::vertical().id_salt("macro_slots").auto_shrink([false, false]).show(ui, |ui| {
+                        for s in 0..slots {
+                            let text = editors::slot_label(s, &used, lang);
+                            let b = egui::Button::selectable(self.macro_slot == s, text)
+                                .min_size(egui::vec2(ui.available_width(), 28.0));
+                            if ui.add(b).clicked() {
+                                self.macro_slot = s;
+                                self.recorder = None;
+                                if !self.macros.contains_key(&s) {
+                                    self.worker.run("Read macro", move |kb| Ok(Update::Macro(s, kb.read_macro(s)?)));
+                                }
+                            }
                         }
-                    }
-                }
-            });
-        });
-        let slot = self.macro_slot;
-        if !self.macros.contains_key(&slot) && !busy {
-            self.macros.insert(slot, Macro { repeat_count: 1, events: vec![] });
-            self.worker.run("Read macro", move |kb| Ok(Update::Macro(slot, kb.read_macro(slot)?)));
-        }
-        let Some(m) = self.macros.get_mut(&slot) else { return };
-        ui.horizontal(|ui| {
-            ui.heading(format!("{} {}", t("Macro"), slot));
-            ui.label(t("Repeat count"));
-            ui.add(egui::DragValue::new(&mut m.repeat_count).range(1..=65535));
-        });
-        ui.horizontal(|ui| {
-            match &mut self.recorder {
-                Some(rec) => {
-                    rec.capture(ui, m);
-                    ui.colored_label(
-                        ui.visuals().error_fg_color,
-                        format!("⏺ {}", t("Recording: type on this window…")),
-                    );
-                    if ui.button(t("Stop recording")).clicked() {
-                        self.recorder = None;
-                    }
-                }
-                None => {
-                    if ui.button(format!("⏺ {}", t("Record"))).clicked() {
-                        self.recorder = Some(Recorder::new(ui.input(|i| i.time)));
-                    }
-                }
-            }
-            if ui.button(t("Add key press")).clicked() {
-                m.events.extend([MacroEvent::KeyDown(0x04), MacroEvent::Delay(20), MacroEvent::KeyUp(0x04)]);
-            }
-            if ui.button(t("Add delay")).clicked() {
-                m.events.push(MacroEvent::Delay(100));
-            }
-            if ui.button(t("Add mouse click")).clicked() {
-                m.events.extend([
-                    MacroEvent::MouseDown(epomaker_core::keymap::MouseAction::Left),
-                    MacroEvent::Delay(20),
-                    MacroEvent::MouseUp(epomaker_core::keymap::MouseAction::Left),
-                ]);
-            }
-            if ui.button(t("Add mouse move")).clicked() {
-                m.events.extend([MacroEvent::MouseMove { dx: 20, dy: 0 }, MacroEvent::Delay(10)]);
-            }
-            if ui.button(t("Clear")).clicked() {
-                m.events.clear();
-            }
-        });
-        let fits = m.encode().is_ok();
-        let used_bytes = m.encode().map(|b| b.iter().rposition(|x| *x != 0).map(|i| i + 1).unwrap_or(0)).unwrap_or(256);
-        ui.horizontal(|ui| {
-            ui.add(egui::ProgressBar::new(used_bytes.min(256) as f32 / 256.0).desired_width(160.0));
-            ui.label(format!("{}: {used_bytes} / 256", t("Bytes used")));
-            if !fits {
-                ui.colored_label(ui.visuals().error_fg_color, t("Macro too long"));
-            }
-        });
-        ui.separator();
-        egui::ScrollArea::vertical().max_height(ui.available_height() - 40.0).show(ui, |ui| {
-            editors::macro_events_ui(ui, lang, m);
-        });
-        ui.separator();
-        let m2 = m.clone();
-        ui.horizontal(|ui| {
-            if ui.add_enabled(fits && !busy, egui::Button::new(t("Write to keyboard"))).clicked() {
-                self.worker.run_notify("Write macro", move |kb| {
-                    kb.write_macro(slot, &m2)?;
-                    Ok(Update::Macro(slot, kb.read_macro(slot)?))
+                    });
                 });
-            }
-            if ui.add_enabled(!busy, egui::Button::new(t("Read from keyboard"))).clicked() {
+            });
+            let slot = self.macro_slot;
+            if !self.macros.contains_key(&slot) && !busy {
+                self.macros.insert(slot, Macro { repeat_count: 1, events: vec![] });
                 self.worker.run("Read macro", move |kb| Ok(Update::Macro(slot, kb.read_macro(slot)?)));
             }
-        });
-        // macro library: share macros as files
-        let mut note: Option<Result<String, String>> = None;
-        ui.horizontal(|ui| {
-            ui.label(t("File"));
-            ui.add(egui::TextEdit::singleline(&mut self.macro_file).desired_width(320.0));
-            if ui.button(t("Export")).clicked() {
-                let path = std::path::PathBuf::from(&self.macro_file);
-                let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-                note = Some(
-                    epomaker_core::macros::MacroFile::new(name, m.clone())
-                        .save(&path)
-                        .map(|_| format!("{}: {}", t("Saved"), path.display()))
-                        .map_err(|e| e.to_string()),
-                );
-            }
-            if ui.button(t("Import")).clicked() {
-                note = Some(match epomaker_core::macros::MacroFile::load(std::path::Path::new(&self.macro_file)) {
-                    Ok(f) => {
-                        *m = f.r#macro;
-                        Ok(format!("{}: {}", t("Loaded"), f.name))
+            let Some(m) = self.macros.get_mut(&slot) else { return };
+            ui.vertical(|ui| {
+                let fits = m.encode().is_ok();
+                theme::card(ui, "", |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(format!("{} {}", t("Macro"), slot).to_uppercase())
+                                .size(20.0)
+                                .family(theme::display())
+                                .color(pal.text_strong),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.add(egui::DragValue::new(&mut m.repeat_count).range(1..=65535));
+                            ui.label(t("Repeat count"));
+                        });
+                    });
+                    ui.add_space(4.0);
+                    ui.horizontal_wrapped(|ui| {
+                        match &mut self.recorder {
+                            Some(rec) => {
+                                rec.capture(ui, m);
+                                if theme::danger_button(ui, true, &format!("{} {}", icon::STOP, t("Stop recording")))
+                                    .clicked()
+                                {
+                                    self.recorder = None;
+                                }
+                            }
+                            None => {
+                                let text = format!("{} {}", icon::RECORD, t("Record"));
+                                if theme::primary_button(ui, true, &text).clicked() {
+                                    self.recorder = Some(Recorder::new(ui.input(|i| i.time)));
+                                }
+                            }
+                        }
+                        if ui.button(t("Add key press")).clicked() {
+                            m.events.extend([
+                                MacroEvent::KeyDown(0x04),
+                                MacroEvent::Delay(20),
+                                MacroEvent::KeyUp(0x04),
+                            ]);
+                        }
+                        if ui.button(t("Add delay")).clicked() {
+                            m.events.push(MacroEvent::Delay(100));
+                        }
+                        if ui.button(t("Add mouse click")).clicked() {
+                            m.events.extend([
+                                MacroEvent::MouseDown(epomaker_core::keymap::MouseAction::Left),
+                                MacroEvent::Delay(20),
+                                MacroEvent::MouseUp(epomaker_core::keymap::MouseAction::Left),
+                            ]);
+                        }
+                        if ui.button(t("Add mouse move")).clicked() {
+                            m.events.extend([MacroEvent::MouseMove { dx: 20, dy: 0 }, MacroEvent::Delay(10)]);
+                        }
+                        if ui.button(format!("{} {}", icon::TRASH, t("Clear"))).clicked() {
+                            m.events.clear();
+                        }
+                    });
+                    if self.recorder.is_some() {
+                        ui.colored_label(
+                            pal.error,
+                            format!("{} {}", icon::RECORD, t("Recording: type on this window…")),
+                        );
                     }
-                    Err(e) => Err(e.to_string()),
+                    let used_bytes =
+                        m.encode().map(|b| b.iter().rposition(|x| *x != 0).map(|i| i + 1).unwrap_or(0)).unwrap_or(256);
+                    ui.horizontal(|ui| {
+                        let fill = if fits { pal.accent } else { pal.error };
+                        ui.add(
+                            egui::ProgressBar::new(used_bytes.min(256) as f32 / 256.0)
+                                .desired_width(160.0)
+                                .desired_height(6.0)
+                                .fill(fill),
+                        );
+                        ui.label(RichText::new(format!("{}: {used_bytes} / 256", t("Bytes used"))).small().weak());
+                        if !fits {
+                            ui.colored_label(pal.error, t("Macro too long"));
+                        }
+                    });
+                    ui.separator();
+                    egui::ScrollArea::vertical()
+                        .id_salt("macro_events")
+                        .max_height((ui.available_height() - 150.0).max(120.0))
+                        .show(ui, |ui| {
+                            editors::macro_events_ui(ui, lang, m);
+                        });
+                    ui.separator();
+                    let m2 = m.clone();
+                    ui.horizontal(|ui| {
+                        let text = format!("{} {}", icon::UPLOAD_SIMPLE, t("Write to keyboard"));
+                        if theme::primary_button(ui, fits && !busy, &text).clicked() {
+                            self.worker.run_notify("Write macro", move |kb| {
+                                kb.write_macro(slot, &m2)?;
+                                Ok(Update::Macro(slot, kb.read_macro(slot)?))
+                            });
+                        }
+                        let read = egui::Button::new(format!("{} {}", icon::DOWNLOAD_SIMPLE, t("Read from keyboard")));
+                        if ui.add_enabled(!busy, read).clicked() {
+                            self.worker.run("Read macro", move |kb| Ok(Update::Macro(slot, kb.read_macro(slot)?)));
+                        }
+                    });
                 });
-            }
+                ui.add_space(12.0);
+                // macro library: share macros as files
+                theme::card(ui, t("File"), |ui| {
+                    ui.horizontal(|ui| {
+                        if ui.button(format!("{} {}", icon::FOLDER_OPEN, t("Import"))).clicked() {
+                            note = Some(
+                                match epomaker_core::macros::MacroFile::load(std::path::Path::new(&self.macro_file)) {
+                                    Ok(f) => {
+                                        *m = f.r#macro;
+                                        Ok(format!("{}: {}", t("Loaded"), f.name))
+                                    }
+                                    Err(e) => Err(e.to_string()),
+                                },
+                            );
+                        }
+                        if ui.button(format!("{} {}", icon::FLOPPY_DISK, t("Export"))).clicked() {
+                            let path = std::path::PathBuf::from(&self.macro_file);
+                            let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                            note = Some(
+                                epomaker_core::macros::MacroFile::new(name, m.clone())
+                                    .save(&path)
+                                    .map(|_| format!("{}: {}", t("Saved"), path.display()))
+                                    .map_err(|e| e.to_string()),
+                            );
+                        }
+                        ui.add(egui::TextEdit::singleline(&mut self.macro_file).desired_width(f32::INFINITY));
+                    });
+                });
+            });
         });
         match note {
             Some(Ok(msg)) => self.toast(ToastKind::Success, msg),
@@ -945,145 +1243,179 @@ impl App {
         let Some(dev) = &mut self.dev else { return };
         let s = &mut dev.snap;
         let model = s.model;
+        let mut reset_clicked = false;
         egui::ScrollArea::vertical().show(ui, |ui| {
-            egui::Grid::new("info").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
-                ui.label(t("Device"));
-                ui.label(format!("{} ({}, id {})", s.info.display_name, s.info.name, s.info.id));
-                ui.end_row();
-                ui.label("");
-                ui.label(RichText::new(&s.describe).small());
-                ui.end_row();
-                ui.label(t("Firmware"));
-                ui.label(format!("{:#06x}", s.firmware));
-                ui.end_row();
-                ui.label(t("Battery"));
-                ui.horizontal(|ui| {
-                    let state = match s.battery.state {
-                        ChargeState::Discharging => t("discharging"),
-                        ChargeState::Charging => t("charging"),
-                        ChargeState::Full => t("full"),
-                    };
-                    ui.label(format!("{}% ({state})", s.battery.percent));
-                    if ui.small_button("⟳").on_hover_text(t("Read battery")).clicked() {
-                        self.worker.run("Read battery", |kb| Ok(Update::Battery(kb.battery()?)));
-                    }
+            ui.columns(2, |cols| {
+                let (left, right) = cols.split_at_mut(1);
+                let (left, right) = (&mut left[0], &mut right[0]);
+                theme::card(left, t("Device"), |ui| {
+                    egui::Grid::new("info").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
+                        ui.weak(t("Model"));
+                        ui.label(format!("{} ({}, id {})", s.info.display_name, s.info.name, s.info.id));
+                        ui.end_row();
+                        ui.weak(t("Connection"));
+                        ui.label(RichText::new(&s.describe).small());
+                        ui.end_row();
+                        ui.weak(t("Firmware"));
+                        ui.label(format!("{:#06x}", s.firmware));
+                        ui.end_row();
+                        ui.weak(t("Battery"));
+                        ui.horizontal(|ui| {
+                            let state = match s.battery.state {
+                                ChargeState::Discharging => t("discharging"),
+                                ChargeState::Charging => t("charging"),
+                                ChargeState::Full => t("full"),
+                            };
+                            ui.label(format!("{}% ({state})", s.battery.percent));
+                            if ui.small_button(icon::ARROWS_CLOCKWISE).on_hover_text(t("Read battery")).clicked() {
+                                self.worker.run("Read battery", |kb| Ok(Update::Battery(kb.battery()?)));
+                            }
+                        });
+                        ui.end_row();
+                    });
                 });
-                ui.end_row();
-            });
-            ui.separator();
-            ui.horizontal(|ui| {
-                ui.label(t("Active profile"));
-                for p in 0..3u8 {
-                    if ui.selectable_label(s.profile == p, format!("{}", p + 1)).clicked() {
-                        s.profile = p;
-                        self.worker.run("Set profile", move |kb| {
-                            kb.set_profile(p)?;
-                            Ok(Update::Profile(kb.profile()?))
+                left.add_space(12.0);
+                let p = s.profile as usize;
+                let title = format!("{} {}", t("Profile"), p + 1);
+                theme::card(left, &title, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(t("Polling rate")).color(ui.visuals().strong_text_color()));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let cur = s.rates.get(p).copied().flatten();
+                            let text = cur.map(|r| format!("{} Hz", r.hz())).unwrap_or("?".into());
+                            ComboBox::from_id_salt("rate").selected_text(text).show_ui(ui, |ui| {
+                                for r in ReportRate::ALL.iter().filter(|r| model.report_rates.contains(&r.hz())) {
+                                    if ui.selectable_label(cur == Some(*r), format!("{} Hz", r.hz())).clicked() {
+                                        s.rates[p] = Some(*r);
+                                        let (r, pp) = (*r, p as u8);
+                                        self.worker.run("Set polling rate", move |kb| {
+                                            kb.set_report_rate(pp, r)?;
+                                            Ok(Update::None)
+                                        });
+                                    }
+                                }
+                            });
+                        });
+                    });
+                    ui.add_space(4.0);
+                    ui.separator();
+                    let o = &mut s.options[p];
+                    let mut changed = false;
+                    changed |= theme::toggle_row(ui, &mut o.win_key_lock, t("Disable Windows key"), "").changed();
+                    changed |= theme::toggle_row(ui, &mut o.mac_mode, t("Mac mode"), "").changed();
+                    changed |= theme::toggle_row(ui, &mut o.wasd_arrows_swap, t("Swap WASD and arrows"), "").changed();
+                    changed |= theme::toggle_row(ui, &mut o.fn_key_swap, t("Swap F-keys and media keys"), "").changed();
+                    changed |= theme::toggle_row(ui, &mut o.led_off, t("Backlight off"), "").changed();
+                    changed |= theme::toggle_row(ui, &mut o.power_save, t("Power saving"), "").changed();
+                    if changed {
+                        let (o, pp) = (*o, p as u8);
+                        self.worker.run("Set options", move |kb| {
+                            kb.set_options(pp, &o)?;
+                            Ok(Update::None)
                         });
                     }
-                }
-            });
-            let p = s.profile as usize;
-            ui.horizontal(|ui| {
-                ui.label(t("Polling rate"));
-                let cur = s.rates.get(p).copied().flatten();
-                let text = cur.map(|r| format!("{} Hz", r.hz())).unwrap_or("?".into());
-                ComboBox::from_id_salt("rate").selected_text(text).show_ui(ui, |ui| {
-                    for r in ReportRate::ALL.iter().filter(|r| model.report_rates.contains(&r.hz())) {
-                        if ui.selectable_label(cur == Some(*r), format!("{} Hz", r.hz())).clicked() {
-                            s.rates[p] = Some(*r);
-                            let (r, pp) = (*r, p as u8);
-                            self.worker.run("Set polling rate", move |kb| {
-                                kb.set_report_rate(pp, r)?;
+                    ui.add_space(2.0);
+                    ui.label(
+                        RichText::new(t("Options apply to the active profile; switch profiles in the header."))
+                            .small()
+                            .weak(),
+                    );
+                });
+
+                theme::card(right, t("Typing"), |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(t("Debounce (ms)")).color(ui.visuals().strong_text_color()));
+                        ui.add_space(8.0);
+                        let r = ui.add(Slider::new(&mut s.debounce, 1..=50));
+                        if r.drag_stopped() || (r.changed() && !r.dragged()) {
+                            let d = s.debounce;
+                            self.worker.run("Set debounce", move |kb| {
+                                kb.set_debounce(d)?;
                                 Ok(Update::None)
                             });
                         }
+                    });
+                    ui.add_space(4.0);
+                    if theme::toggle_row(ui, &mut s.auto_os, t("Automatic OS detection"), "").changed() {
+                        let v = s.auto_os;
+                        self.worker.run("Set auto OS", move |kb| {
+                            kb.set_auto_os(v)?;
+                            Ok(Update::None)
+                        });
                     }
                 });
-            });
-            ui.add_space(6.0);
-            ui.label(RichText::new(t("Options for this profile")).strong());
-            let o = &mut s.options[p];
-            let mut changed = false;
-            changed |= ui.checkbox(&mut o.win_key_lock, t("Disable Windows key")).changed();
-            changed |= ui.checkbox(&mut o.mac_mode, t("Mac mode")).changed();
-            changed |= ui.checkbox(&mut o.wasd_arrows_swap, t("Swap WASD and arrows")).changed();
-            changed |= ui.checkbox(&mut o.fn_key_swap, t("Swap F-keys and media keys")).changed();
-            changed |= ui.checkbox(&mut o.led_off, t("Backlight off")).changed();
-            changed |= ui.checkbox(&mut o.power_save, t("Power saving")).changed();
-            if changed {
-                let (o, pp) = (*o, p as u8);
-                self.worker.run("Set options", move |kb| {
-                    kb.set_options(pp, &o)?;
-                    Ok(Update::None)
-                });
-            }
-            ui.separator();
-            ui.horizontal(|ui| {
-                ui.label(t("Debounce (ms)"));
-                let r = ui.add(Slider::new(&mut s.debounce, 1..=50));
-                if r.drag_stopped() || (r.changed() && !r.dragged()) {
-                    let d = s.debounce;
-                    self.worker.run("Set debounce", move |kb| {
-                        kb.set_debounce(d)?;
-                        Ok(Update::None)
+                if model.sleep_bt.is_some() || model.sleep_dongle.is_some() {
+                    right.add_space(12.0);
+                    theme::card(right, t("Sleep timers (minutes)"), |ui| {
+                        let mut sl: SleepTimes = s.sleep;
+                        let mut changed = false;
+                        ui.spacing_mut().slider_width = 110.0;
+                        egui::Grid::new("sleep").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                            if let Some(l) = model.sleep_bt {
+                                changed |= minutes(
+                                    ui,
+                                    t("Bluetooth: light off"),
+                                    &mut sl.bt_light_off,
+                                    l.min,
+                                    l.max,
+                                    true,
+                                    lang,
+                                );
+                                changed |= minutes(
+                                    ui,
+                                    t("Bluetooth: deep sleep"),
+                                    &mut sl.bt_deep_sleep,
+                                    l.min_deep,
+                                    l.max_deep,
+                                    false,
+                                    lang,
+                                );
+                            }
+                            if let Some(l) = model.sleep_dongle {
+                                changed |= minutes(
+                                    ui,
+                                    t("2.4 GHz: light off"),
+                                    &mut sl.dongle_light_off,
+                                    l.min,
+                                    l.max,
+                                    true,
+                                    lang,
+                                );
+                                changed |= minutes(
+                                    ui,
+                                    t("2.4 GHz: deep sleep"),
+                                    &mut sl.dongle_deep_sleep,
+                                    l.min_deep,
+                                    l.max_deep,
+                                    false,
+                                    lang,
+                                );
+                            }
+                        });
+                        if changed {
+                            s.sleep = sl;
+                            self.worker.run("Set sleep timers", move |kb| {
+                                kb.set_sleep_times(&sl)?;
+                                Ok(Update::None)
+                            });
+                        }
                     });
                 }
+                right.add_space(12.0);
+                theme::card(right, t("Factory reset"), |ui| {
+                    ui.label(
+                        RichText::new(t("Erases every profile, key mapping, macro and lighting setting."))
+                            .small()
+                            .weak(),
+                    );
+                    ui.add_space(4.0);
+                    reset_clicked = theme::danger_button(ui, !busy, t("Factory reset…")).clicked();
+                });
             });
-            if ui.checkbox(&mut s.auto_os, t("Automatic OS detection")).changed() {
-                let v = s.auto_os;
-                self.worker.run("Set auto OS", move |kb| {
-                    kb.set_auto_os(v)?;
-                    Ok(Update::None)
-                });
-            }
-            if model.sleep_bt.is_some() || model.sleep_dongle.is_some() {
-                ui.separator();
-                ui.label(RichText::new(t("Sleep timers (minutes)")).strong());
-                let mut sl: SleepTimes = s.sleep;
-                let mut changed = false;
-                egui::Grid::new("sleep").num_columns(2).show(ui, |ui| {
-                    if let Some(l) = model.sleep_bt {
-                        changed |=
-                            minutes(ui, t("Bluetooth: light off"), &mut sl.bt_light_off, l.min, l.max, true, lang);
-                        changed |= minutes(
-                            ui,
-                            t("Bluetooth: deep sleep"),
-                            &mut sl.bt_deep_sleep,
-                            l.min_deep,
-                            l.max_deep,
-                            false,
-                            lang,
-                        );
-                    }
-                    if let Some(l) = model.sleep_dongle {
-                        changed |=
-                            minutes(ui, t("2.4 GHz: light off"), &mut sl.dongle_light_off, l.min, l.max, true, lang);
-                        changed |= minutes(
-                            ui,
-                            t("2.4 GHz: deep sleep"),
-                            &mut sl.dongle_deep_sleep,
-                            l.min_deep,
-                            l.max_deep,
-                            false,
-                            lang,
-                        );
-                    }
-                });
-                if changed {
-                    s.sleep = sl;
-                    self.worker.run("Set sleep timers", move |kb| {
-                        kb.set_sleep_times(&sl)?;
-                        Ok(Update::None)
-                    });
-                }
-            }
-            ui.separator();
-            let reset = egui::Button::new(RichText::new(t("Factory reset…")).color(ui.visuals().error_fg_color));
-            if ui.add_enabled(!busy, reset).clicked() {
-                self.confirm_reset = true;
-            }
         });
+        if reset_clicked {
+            self.confirm_reset = true;
+        }
         if self.confirm_reset {
             let modal = egui::Modal::new(egui::Id::new("confirm_reset")).show(ui.ctx(), |ui| {
                 ui.label(t("This erases every profile, key mapping, macro and lighting setting. Continue?"));
@@ -1113,32 +1445,46 @@ impl App {
         let lang = self.lang;
         let t = |s| tr(lang, s);
         let busy = self.worker.busy();
-        ui.label(t("Save the whole configuration of the keyboard to a file, or load one."));
-        ui.horizontal(|ui| {
-            ui.label(t("File"));
-            ui.add(egui::TextEdit::singleline(&mut self.backup_path).desired_width(420.0));
-        });
-        ui.horizontal(|ui| {
-            if ui.add_enabled(!busy, egui::Button::new(t("Save backup"))).clicked() {
-                let path = self.backup_path.clone();
-                let done = format!("{}: {path}", t("Saved"));
-                self.worker.run_with(JobInfo::quiet("Save backup"), move |kb, _| {
-                    let b = Backup::capture(kb)?;
-                    std::fs::write(&path, serde_json::to_string_pretty(&b)?)?;
-                    Ok(Update::Message(done))
-                });
-            }
-            if ui.add_enabled(!busy, egui::Button::new(t("Load backup"))).clicked() {
-                let path = self.backup_path.clone();
-                let done = format!("{}: {path}", t("Restored"));
-                self.macros.clear();
-                let info = JobInfo { label: "Load backup", notify: false, blocking: true };
-                self.worker.run_with(info, move |kb, progress| {
-                    let b: Backup = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
-                    b.restore(kb)?;
-                    Ok(Update::Many(vec![Update::Connected(Box::new(snapshot(kb, progress)?)), Update::Message(done)]))
-                });
-            }
+        theme::card(ui, t("Backup file"), |ui| {
+            ui.horizontal(|ui| {
+                ui.label(icon::FILE_TEXT);
+                ui.add(egui::TextEdit::singleline(&mut self.backup_path).desired_width(f32::INFINITY));
+            });
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if theme::primary_button(ui, !busy, &format!("{} {}", icon::FLOPPY_DISK, t("Save backup"))).clicked() {
+                    let path = self.backup_path.clone();
+                    let done = format!("{}: {path}", t("Saved"));
+                    self.worker.run_with(JobInfo::quiet("Save backup"), move |kb, _| {
+                        let b = Backup::capture(kb)?;
+                        std::fs::write(&path, serde_json::to_string_pretty(&b)?)?;
+                        Ok(Update::Message(done))
+                    });
+                }
+                let load = egui::Button::new(format!("{} {}", icon::FOLDER_OPEN, t("Load backup")));
+                if ui.add_enabled(!busy, load).clicked() {
+                    let path = self.backup_path.clone();
+                    let done = format!("{}: {path}", t("Restored"));
+                    self.macros.clear();
+                    let info = JobInfo { label: "Load backup", notify: false, blocking: true };
+                    self.worker.run_with(info, move |kb, progress| {
+                        let b: Backup = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+                        b.restore(kb)?;
+                        Ok(Update::Many(vec![
+                            Update::Connected(Box::new(snapshot(kb, progress)?)),
+                            Update::Message(done),
+                        ]))
+                    });
+                }
+            });
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(t(
+                    "Includes every profile, the Fn layers, macros, lighting, per-key colors and settings.",
+                ))
+                .small()
+                .weak(),
+            );
         });
     }
 }
@@ -1370,74 +1716,96 @@ impl eframe::App for App {
                 self.connect(t);
             }
         }
-        egui::Panel::top("top").show(ui, |ui| {
-            ui.add_space(4.0);
-            self.top_bar(ui);
-            ui.add_space(4.0);
-        });
-        egui::Panel::bottom("status").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                if let Some(e) = &self.error {
-                    ui.colored_label(ui.visuals().error_fg_color, format!("{}: {e}", self.t("Error")));
-                } else {
-                    ui.label(&self.status);
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(
-                        RichText::new(self.t("Experimental: this software is not affiliated with EPOMAKER."))
-                            .small()
-                            .weak(),
-                    );
+        if self.tab != Tab::Tester {
+            // keys pressed elsewhere must not show up when the tester opens
+            crate::rawkeys::take();
+        }
+        let p = theme::palette(ui);
+        egui::Panel::top("header")
+            .frame(
+                egui::Frame::new()
+                    .fill(p.header)
+                    .inner_margin(egui::Margin { left: 18, right: 14, top: 10, bottom: 10 })
+                    .stroke(egui::Stroke::new(1.0, p.border)),
+            )
+            .show_separator_line(false)
+            .show(ui, |ui| self.header(ui));
+        egui::Panel::bottom("status")
+            .frame(egui::Frame::new().fill(p.sidebar).inner_margin(egui::Margin::symmetric(14, 4)))
+            .show_separator_line(false)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if let Some(e) = &self.error {
+                        ui.label(RichText::new(format!("{} {e}", icon::WARNING)).small().color(p.error));
+                    } else {
+                        ui.label(RichText::new(&self.status).small().color(p.text_dim));
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let text = format!(
+                            "v{} · {}",
+                            env!("CARGO_PKG_VERSION"),
+                            self.t("Experimental: this software is not affiliated with EPOMAKER.")
+                        );
+                        ui.label(RichText::new(text).small().color(p.text_dim));
+                    });
                 });
             });
-        });
-        egui::Panel::left("tabs").resizable(false).default_size(170.0).show(ui, |ui| {
-            ui.add_space(8.0);
-            for tab in Tab::ALL {
-                let text = RichText::new(self.t(tab.label())).size(15.0);
-                let b =
-                    egui::Button::selectable(self.tab == tab, text).min_size(egui::vec2(ui.available_width(), 28.0));
-                let enabled = self.dev.is_some() || tab == Tab::Diagnostics;
-                if ui.add_enabled(enabled, b).clicked() {
-                    self.tab = tab;
-                }
-            }
-        });
-        egui::CentralPanel::default().show(ui, |ui| {
-            if self.dev.is_none() && self.tab != Tab::Diagnostics {
-                ui.centered_and_justified(|ui| {
-                    if self.worker.busy() {
-                        ui.spinner();
-                    } else if self.unplugged {
-                        ui.label(
-                            RichText::new(format!(
-                                "{}\n\n{}",
-                                self.t("Keyboard disconnected"),
-                                self.t("It will reconnect automatically when plugged in again.")
-                            ))
-                            .size(18.0),
-                        );
-                    } else {
-                        ui.label(RichText::new(self.t("No keyboard connected")).size(18.0));
+        egui::Panel::left("tabs")
+            .resizable(false)
+            .exact_size(212.0)
+            .frame(egui::Frame::new().fill(p.sidebar).inner_margin(egui::Margin {
+                left: 10,
+                right: 10,
+                top: 16,
+                bottom: 10,
+            }))
+            .show_separator_line(false)
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                for group in NAV {
+                    ui.horizontal(|ui| {
+                        ui.add_space(8.0);
+                        theme::section_label(ui, self.t(group.label));
+                    });
+                    ui.add_space(2.0);
+                    for &tab in group.tabs {
+                        let enabled = self.dev.is_some() || tab == Tab::Diagnostics;
+                        let label = self.t(tab.label()).to_string();
+                        if theme::nav_item(ui, tab.icon(), &label, self.tab == tab, enabled).clicked() {
+                            self.tab = tab;
+                        }
                     }
-                });
-                return;
-            }
-            if self.worker.blocked() {
-                ui.disable();
-            }
-            match self.tab {
-                Tab::Lighting => self.lighting_tab(ui),
-                Tab::Keymap => self.keymap_tab(ui),
-                Tab::Colors => self.colors_tab(ui),
-                Tab::Macros => self.macros_tab(ui),
-                Tab::Tester => self.tester_tab(ui),
-                Tab::Agent => self.agent_tab(ui),
-                Tab::Settings => self.settings_tab(ui),
-                Tab::Backup => self.backup_tab(ui),
-                Tab::Diagnostics => self.diagnostics_tab(ui),
-            }
-        });
+                    ui.add_space(14.0);
+                }
+            });
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(p.bg).inner_margin(egui::Margin {
+                left: 26,
+                right: 22,
+                top: 18,
+                bottom: 12,
+            }))
+            .show(ui, |ui| {
+                if self.dev.is_none() && self.tab != Tab::Diagnostics {
+                    self.empty_state(ui);
+                    return;
+                }
+                if self.worker.blocked() {
+                    ui.disable();
+                }
+                theme::page_title(ui, self.t(self.tab.label()), self.t(self.tab.subtitle()));
+                match self.tab {
+                    Tab::Lighting => self.lighting_tab(ui),
+                    Tab::Keymap => self.keymap_tab(ui),
+                    Tab::Colors => self.colors_tab(ui),
+                    Tab::Macros => self.macros_tab(ui),
+                    Tab::Tester => self.tester_tab(ui),
+                    Tab::Agent => self.agent_tab(ui),
+                    Tab::Settings => self.settings_tab(ui),
+                    Tab::Backup => self.backup_tab(ui),
+                    Tab::Diagnostics => self.diagnostics_tab(ui),
+                }
+            });
         self.toasts_ui(&ctx);
     }
 
@@ -1459,6 +1827,9 @@ impl eframe::App for App {
             recent_colors: self.colors.recent.clone(),
             light_auto: self.light_auto,
             verify: self.verify,
+            accent: self.accent,
+            legend: self.legend,
+            style_version: STYLE_VERSION,
         };
         eframe::set_value(storage, eframe::APP_KEY, &prefs);
     }
@@ -1486,13 +1857,18 @@ mod tests {
             recent_colors: vec![[1, 2, 3]],
             light_auto: false,
             verify: false,
+            accent: Accent::Green,
+            legend: Legend::Es,
+            style_version: STYLE_VERSION,
         };
         let back: Prefs = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
         assert_eq!(back.lang, Some(Lang::Es));
         assert!(back.theme == ThemeChoice::Light && back.zoom == 1.25 && !back.light_auto);
         assert!(back.last_device == p.last_device && back.recent_colors == p.recent_colors);
         let old: Prefs = serde_json::from_str(r#"{"lang":"En"}"#).unwrap();
-        assert!(old.light_auto && old.zoom == 1.0 && old.theme == ThemeChoice::System);
+        assert!(old.light_auto && old.zoom == 1.0 && old.theme == ThemeChoice::Dark);
+        assert!(old.style_version == 0 && old.accent == Accent::Cyan && old.legend == Legend::Auto);
+        assert!(back.accent == Accent::Green && back.legend == Legend::Es);
         assert!(old.verify, "verify is on unless turned off");
         assert!(!back.verify);
     }

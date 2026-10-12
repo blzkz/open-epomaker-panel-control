@@ -4,6 +4,7 @@ use super::App;
 use crate::i18n::tr;
 use crate::keyboard_view::{self, Geometry, KeyStyle};
 use crate::preview;
+use crate::theme;
 use crate::worker::{JobInfo, Snapshot, Update, Worker};
 use eframe::egui::{self, Pos2, Rect, RichText, Sense, StrokeKind, Vec2};
 use epomaker_core::lighting::{LightEffect, LightMode, Rgb};
@@ -147,72 +148,76 @@ impl App {
         let geo = Geometry::new(model);
 
         // ---- custom picture slot
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(t("Custom picture")).strong());
-            for s in 0..SLOTS {
-                if ui.selectable_value(&mut st.slot, s, format!("{}", s + 1)).changed() {
+        let pal = theme::palette(ui);
+        theme::card(ui, "", |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(t("Custom picture")).color(pal.text_strong));
+                let items: Vec<(u8, String)> = (0..SLOTS).map(|s| (s, format!("{}", s + 1))).collect();
+                if theme::segmented(ui, &mut st.slot, &items) {
                     st.last_painted = None;
                 }
-            }
-            let shown = matches!(dev.snap.light, Some(l) if l.mode == LightMode::UserPicture && l.option == st.slot);
-            if shown {
-                ui.weak(t("(shown on the keyboard)"));
-            } else if ui.add_enabled(!busy, egui::Button::new(t("Show this picture on the keyboard"))).clicked() {
-                let e = LightEffect {
-                    mode: LightMode::UserPicture,
-                    brightness: 4,
-                    option: st.slot,
-                    ..LightEffect::default()
-                };
-                self.light = e;
-                self.worker.run_notify("Set lighting", move |kb| {
-                    kb.set_light(&e)?;
-                    Ok(Update::Light(Some(e)))
-                });
-            }
-        });
-        ui.weak(if st.slot == 0 {
+                let shown =
+                    matches!(dev.snap.light, Some(l) if l.mode == LightMode::UserPicture && l.option == st.slot);
+                if shown {
+                    ui.weak(t("(shown on the keyboard)"));
+                } else if ui.add_enabled(!busy, egui::Button::new(t("Show this picture on the keyboard"))).clicked() {
+                    let e = LightEffect {
+                        mode: LightMode::UserPicture,
+                        brightness: 4,
+                        option: st.slot,
+                        ..LightEffect::default()
+                    };
+                    self.light = e;
+                    self.worker.run_notify("Set lighting", move |kb| {
+                        kb.set_light(&e)?;
+                        Ok(Update::Light(Some(e)))
+                    });
+                }
+            });
+            ui.label(RichText::new(if st.slot == 0 {
             t("\"Write all\" sends the whole picture at once. The keyboard's bulk write always goes to picture 1, like in the vendor app.")
         } else {
             t("Pictures 2 and 3 cannot be read back and the bulk write only reaches picture 1, so they are written key by key (slower).")
-        });
-        ui.add_space(4.0);
+        }).small().color(pal.text_dim));
+            ui.separator();
 
-        // ---- tools
-        ui.horizontal_wrapped(|ui| {
-            ui.label(t("Tool"));
-            ui.selectable_value(&mut st.tool, Tool::Paint, t("Paint"))
-                .on_hover_text(t("Click or drag over keys to paint them."));
-            ui.selectable_value(&mut st.tool, Tool::Select, t("Select"))
-                .on_hover_text(t("Click keys, or drag a box around them. Hold Shift to add to the selection."));
-            ui.selectable_value(&mut st.tool, Tool::Rows, t("Select rows"))
-                .on_hover_text(t("Click a key to select its row."));
-            ui.separator();
-            ui.label(t("Brush"));
-            egui::color_picker::color_edit_button_srgb(ui, &mut st.brush);
-            for c in st.recent.clone() {
-                let (rect, resp) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::click());
-                ui.painter().rect_filled(rect, 3.0, egui::Color32::from_rgb(c[0], c[1], c[2]));
-                if c == st.brush {
-                    ui.painter().rect_stroke(rect, 3.0, ui.visuals().selection.stroke, StrokeKind::Outside);
+            // ---- tools
+            ui.horizontal_wrapped(|ui| {
+                ui.label(t("Tool"));
+                ui.selectable_value(&mut st.tool, Tool::Paint, t("Paint"))
+                    .on_hover_text(t("Click or drag over keys to paint them."));
+                ui.selectable_value(&mut st.tool, Tool::Select, t("Select"))
+                    .on_hover_text(t("Click keys, or drag a box around them. Hold Shift to add to the selection."));
+                ui.selectable_value(&mut st.tool, Tool::Rows, t("Select rows"))
+                    .on_hover_text(t("Click a key to select its row."));
+                ui.separator();
+                ui.label(t("Brush"));
+                egui::color_picker::color_edit_button_srgb(ui, &mut st.brush);
+                for c in st.recent.clone() {
+                    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::click());
+                    ui.painter().rect_filled(rect, 3.0, egui::Color32::from_rgb(c[0], c[1], c[2]));
+                    if c == st.brush {
+                        ui.painter().rect_stroke(rect, 3.0, ui.visuals().selection.stroke, StrokeKind::Outside);
+                    }
+                    if resp.on_hover_text(format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2])).clicked() {
+                        st.brush = c;
+                    }
                 }
-                if resp.on_hover_text(format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2])).clicked() {
-                    st.brush = c;
+                if st.recent.is_empty() {
+                    ui.weak(t("(recent colors appear here)"));
                 }
-            }
-            if st.recent.is_empty() {
-                ui.weak(t("(recent colors appear here)"));
-            }
-            ui.separator();
-            ui.checkbox(&mut st.paint_live, t("Paint live"))
-                .on_hover_text(t("Send every change to the keyboard right away"));
+                ui.separator();
+                theme::toggle(ui, &mut st.paint_live).on_hover_text(t("Send every change to the keyboard right away"));
+                ui.label(t("Paint live"));
+            });
         });
+        ui.add_space(10.0);
 
         // ---- keyboard
         let slot = st.slot;
         let colors = st.colors(&mut dev.snap).clone();
         let selection = st.selection.clone();
-        let max_h = (ui.available_height() * 0.6).max(180.0);
+        let max_h = (ui.available_height() * 0.5).max(170.0);
         let resp = keyboard_view::show(ui, model, max_h, |k| {
             let fill = colors.get(k.idx).map(|c| preview::rgb(*c)).unwrap_or(preview::DARK);
             KeyStyle {
@@ -288,37 +293,60 @@ impl App {
                 }
             }
         }
-        ui.add_space(6.0);
+        ui.add_space(10.0);
 
         // ---- selection and fills
         let mut fill: Option<Vec<(usize, Rgb)>> = None;
-        ui.horizontal_wrapped(|ui| {
-            if st.selection.is_empty() {
-                ui.label(t("No keys selected: fills apply to the whole keyboard."));
-            } else {
-                ui.label(RichText::new(format!("{} {}", st.selection.len(), t("keys selected"))).strong());
-            }
-            if ui.button(t("Select all")).clicked() {
-                st.selection = geo.keys.iter().map(|k| k.idx).collect();
-            }
-            if ui.add_enabled(!st.selection.is_empty(), egui::Button::new(t("Clear selection"))).clicked() {
-                st.selection.clear();
-            }
-        });
-        ui.horizontal_wrapped(|ui| {
-            if ui.button(t("Fill with brush")).clicked() {
-                let c = Rgb::new(st.brush[0], st.brush[1], st.brush[2]);
-                fill = Some(st.targets(&geo).into_iter().map(|i| (i, c)).collect());
-            }
-            ui.separator();
-            ui.label(t("Gradient from brush to"));
-            egui::color_picker::color_edit_button_srgb(ui, &mut st.gradient_end);
-            ui.selectable_value(&mut st.vertical, false, t("left to right"));
-            ui.selectable_value(&mut st.vertical, true, t("top to bottom"));
-            if ui.button(t("Apply gradient")).clicked() {
-                fill = Some(st.gradient(&geo));
-                st.remember(st.gradient_end);
-            }
+        let mut transfer: Option<bool> = None; // Some(true) = write all, Some(false) = read
+        ui.columns(2, |cols| {
+            theme::card(&mut cols[0], t("Selection"), |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if st.selection.is_empty() {
+                        ui.label(t("No keys selected: fills apply to the whole keyboard."));
+                    } else {
+                        ui.label(RichText::new(format!("{} {}", st.selection.len(), t("keys selected"))).strong());
+                    }
+                    if ui.button(t("Select all")).clicked() {
+                        st.selection = geo.keys.iter().map(|k| k.idx).collect();
+                    }
+                    if ui.add_enabled(!st.selection.is_empty(), egui::Button::new(t("Clear selection"))).clicked() {
+                        st.selection.clear();
+                    }
+                });
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button(t("Fill with brush")).clicked() {
+                        let c = Rgb::new(st.brush[0], st.brush[1], st.brush[2]);
+                        fill = Some(st.targets(&geo).into_iter().map(|i| (i, c)).collect());
+                    }
+                    ui.separator();
+                    ui.label(t("Gradient from brush to"));
+                    egui::color_picker::color_edit_button_srgb(ui, &mut st.gradient_end);
+                    ui.selectable_value(&mut st.vertical, false, t("left to right"));
+                    ui.selectable_value(&mut st.vertical, true, t("top to bottom"));
+                    if ui.button(t("Apply gradient")).clicked() {
+                        fill = Some(st.gradient(&geo));
+                        st.remember(st.gradient_end);
+                    }
+                });
+            });
+            theme::card(&mut cols[1], t("Keyboard"), |ui| {
+                ui.horizontal(|ui| {
+                    let label =
+                        if slot == 0 { t("Write all to keyboard") } else { t("Write all to keyboard (key by key)") };
+                    if theme::primary_button(ui, !busy, &format!("{} {label}", theme::icon::UPLOAD_SIMPLE)).clicked() {
+                        transfer = Some(true);
+                    }
+                    let read = ui
+                        .add_enabled(
+                            !busy && slot == 0,
+                            egui::Button::new(format!("{} {}", theme::icon::DOWNLOAD_SIMPLE, t("Read from keyboard"))),
+                        )
+                        .on_disabled_hover_text(t("Only picture 1 can be read back."));
+                    if read.clicked() {
+                        transfer = Some(false);
+                    }
+                });
+            });
         });
         if let Some(changes) = fill {
             st.remember(st.brush);
@@ -334,21 +362,15 @@ impl App {
                 write_colors(&self.worker, slot, all.clone(), keys);
             }
         }
-        ui.add_space(6.0);
 
         // ---- keyboard transfer
-        ui.horizontal(|ui| {
-            let label = if slot == 0 { t("Write all to keyboard") } else { t("Write all to keyboard (key by key)") };
-            if ui.add_enabled(!busy, egui::Button::new(RichText::new(label).strong())).clicked() {
+        match transfer {
+            Some(true) => {
                 let all = st.colors(&mut dev.snap).clone();
                 write_colors(&self.worker, slot, all, geo.keys.iter().map(|k| k.idx).collect());
             }
-            let read = ui
-                .add_enabled(!busy && slot == 0, egui::Button::new(t("Read from keyboard")))
-                .on_disabled_hover_text(t("Only picture 1 can be read back."));
-            if read.clicked() {
-                self.worker.run("Read colors", |kb| Ok(Update::Colors(kb.key_colors()?)));
-            }
-        });
+            Some(false) => self.worker.run("Read colors", |kb| Ok(Update::Colors(kb.key_colors()?))),
+            None => {}
+        }
     }
 }

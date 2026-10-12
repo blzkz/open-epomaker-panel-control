@@ -151,7 +151,28 @@ pub fn run_step(kb: &mut Keyboard, step: Step) -> StepResult {
         Step::Macro => macro_slot(kb),
     };
     kb.set_verify(verify);
+    let mut r = r;
+    if step.writes() && r.outcome == Outcome::Failed {
+        still_answers(kb, &mut r);
+    }
     r
+}
+
+/// After a failed write step: does the keyboard still answer at all? (Tells a rejected
+/// command apart from a keyboard that stopped responding.)
+fn still_answers(kb: &mut Keyboard, r: &mut StepResult) {
+    let started = std::time::Instant::now();
+    match kb.raw_query(cmd::GET_DEVICE_ID, 0, 0) {
+        Ok(_) => r
+            .details
+            .push(format!("after the failure the keyboard answers again ({} ms later)", started.elapsed().as_millis())),
+        Err(e) => r.details.push(format!("after the failure the keyboard does not answer: {e}")),
+    }
+}
+
+/// Gives the firmware time to store the test value before it is overwritten again.
+fn settle(kb: &Keyboard) {
+    crate::transport::sleep(kb.pacing().after_big_command);
 }
 
 fn identify(kb: &mut Keyboard) -> StepResult {
@@ -261,7 +282,7 @@ fn lighting(kb: &mut Keyboard) -> StepResult {
     let raw = match kb.light_raw() {
         Ok(raw) => raw,
         Err(e) => {
-            r.fail(e);
+            r.fail(format!("reading the lighting: {e}"));
             return r;
         }
     };
@@ -285,8 +306,9 @@ fn lighting(kb: &mut Keyboard) -> StepResult {
     r.details.push(format!("original: {:?} brightness {} [{hex}]", original.mode, original.brightness));
     r.details.push(format!("test: {:?} brightness {}", test.mode, test.brightness));
     if let Err(e) = kb.set_light(&test) {
-        r.fail(e);
+        r.fail(format!("test write: {e}"));
     }
+    settle(kb);
     restore(&mut r, &format!("[{hex}]"), || kb.set_light_raw(&raw));
     r
 }
@@ -315,7 +337,7 @@ fn keymap(kb: &mut Keyboard) -> StepResult {
             return r;
         }
         Err(e) => {
-            r.fail(e);
+            r.fail(format!("reading profile {}: {e}", PROFILES));
             return r;
         }
     };
@@ -326,8 +348,9 @@ fn keymap(kb: &mut Keyboard) -> StepResult {
     r.details.push(format!("key {label} (#{index}) on profile {}: {hex}", PROFILES));
     r.details.push(format!("test: {}", crate::keycodes::display(code)));
     if let Err(e) = kb.set_key(layer, index, test) {
-        r.fail(e);
+        r.fail(format!("test write: {e}"));
     }
+    settle(kb);
     restore(&mut r, &hex, || kb.set_key(layer, index, KeyAction::Raw(original)));
     r
 }
@@ -337,7 +360,7 @@ fn macro_slot(kb: &mut Keyboard) -> StepResult {
     let used = match kb.used_macro_slots() {
         Ok(u) => u,
         Err(e) => {
-            r.fail(e);
+            r.fail(format!("reading which macros keys use: {e}"));
             return r;
         }
     };
@@ -356,7 +379,7 @@ fn macro_slot(kb: &mut Keyboard) -> StepResult {
                 }
             }
             Err(e) => {
-                r.fail(e);
+                r.fail(format!("reading macro slot {slot}: {e}"));
                 return r;
             }
         }
@@ -372,10 +395,11 @@ fn macro_slot(kb: &mut Keyboard) -> StepResult {
         Ok(()) => match kb.read_macro(slot) {
             Ok(back) if back == test => r.details.push("test macro read back intact".into()),
             Ok(back) => r.fail(format!("macro decoded differently: {back:?}")),
-            Err(e) => r.fail(e),
+            Err(e) => r.fail(format!("reading the test macro back: {e}")),
         },
-        Err(e) => r.fail(e),
+        Err(e) => r.fail(format!("test write: {e}")),
     }
+    settle(kb);
     let mut data = [0u8; crate::macros::MACRO_SLOT_LEN];
     let n = original.len().min(data.len());
     data[..n].copy_from_slice(&original[..n]);

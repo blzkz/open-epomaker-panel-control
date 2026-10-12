@@ -232,10 +232,17 @@ fn pretty_label(label: &str) -> String {
         "U+" => "Vol+",
         "win" => "Win",
         "space" => "Space",
-        "r-Alt" => "R-Alt",
-        "r-Ctrl" => "R-Ctrl",
-        "r-Win" => "R-Win",
-        other => other,
+        "r-Alt" | "r_Alt" => "R-Alt",
+        "r-Ctrl" | "r_Ctrl" => "R-Ctrl",
+        "r-Win" | "r_Win" => "R-Win",
+        "r_Shift" | "r-Shift" => "R-Shift",
+        "(space)" => "Space",
+        "L_\\" => "\\",
+        "BackSpace" => "Backspace",
+        "FN" | "fn" => "Fn",
+        "play" => "Play",
+        // keypad keys: "num_7" -> "7"
+        other => other.strip_prefix("num_").unwrap_or(other),
     }
     .to_string()
 }

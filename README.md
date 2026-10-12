@@ -128,8 +128,15 @@ also pick a keyboard (or a **demo keyboard**) and click *Connect*. The tabs are:
 - **Tray agent**: per-application rules and start-with-system for `epomaker-agent`.
 - **Settings**, **Backup** and **Diagnostics**.
 
-The *Preferences* menu switches between English and Spanish, light/dark/system theme and
-the interface size. These settings, the window size and the last keyboard are remembered.
+The header shows the keyboard, its battery and the active profile (click 1, 2 or 3 to
+switch). The *Preferences* menu (gear icon) switches between English and Spanish,
+dark/light/system theme, the accent color, the keycap legends and the interface size.
+These settings, the window size and the last keyboard are remembered.
+
+**Keycap legends:** the firmware cannot tell national layouts apart — an ISO Spanish
+TH80 reports the same model as the ISO UK one, because the keys are physically the same.
+The panel therefore prints the legends of the system keyboard layout (Spanish, UK, US,
+Latin American, Portuguese, German, French or Italian); pick another one in *Preferences*.
 
 The **Diagnostics** tab runs the hardware self-test (see below) step by step and has a
 *Copy report* button that puts a Markdown report on the clipboard, ready to paste into a
@@ -236,6 +243,11 @@ and an unused macro slot (preferably empty, never one bound to a key) is written
 and emptied. Every write is verified, and each step restores the original state even when
 it fails; a restore that does not stick is reported as *not restored*, with the original
 value, so it can be fixed by hand.
+
+Failed USB transfers are retried a few times with growing pauses (the firmware briefly
+stops answering while it saves settings). If writes still fail, run with
+`EPOMAKER_PACING=2` (or `3`) to make every pause between reports longer and tell us
+whether it helps.
 
 ## License
 

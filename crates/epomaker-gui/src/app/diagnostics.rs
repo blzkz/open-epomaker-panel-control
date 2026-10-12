@@ -3,8 +3,9 @@
 
 use super::{App, ToastKind, Update};
 use crate::i18n::tr;
+use crate::theme;
 use crate::worker::JobInfo;
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, RichText};
 use epomaker_core::selftest::{self, DeviceSummary, Outcome, Step, StepResult};
 use epomaker_core::Keyboard;
 
@@ -62,82 +63,94 @@ impl App {
                 self.probe_panel(ui);
                 return;
             }
-            ui.heading(t("Hardware self-test"));
-            ui.label(t(SELFTEST_INTRO));
-            ui.add_space(6.0);
-            if ui.checkbox(&mut self.verify, t("Verify every write (read it back)")).changed() {
-                let v = self.verify;
-                self.worker.run("Verify writes", move |kb| {
-                    kb.set_verify(v);
-                    Ok(Update::None)
-                });
-            }
-            ui.label(RichText::new(t(VERIFY_HINT)).small().weak());
-            ui.add_space(8.0);
+            let pal = theme::palette(ui);
             let running = self.selftest.as_ref().is_some_and(|s| s.running);
             let report = self.report();
             let mut copied = false;
-            ui.horizontal(|ui| {
-                if ui.add_enabled(!running && !self.worker.busy(), egui::Button::new(t("Run self-test"))).clicked() {
-                    self.start_selftest();
+            theme::card(ui, t("Hardware self-test"), |ui| {
+                ui.label(t(SELFTEST_INTRO));
+                ui.add_space(6.0);
+                if theme::toggle_row(ui, &mut self.verify, t("Verify every write (read it back)"), t(VERIFY_HINT))
+                    .changed()
+                {
+                    let v = self.verify;
+                    self.worker.run("Verify writes", move |kb| {
+                        kb.set_verify(v);
+                        Ok(Update::None)
+                    });
                 }
-                if ui.add_enabled(!running && report.is_some(), egui::Button::new(t("Copy report"))).clicked() {
-                    if let Some(md) = report.clone() {
-                        ui.ctx().copy_text(md);
-                        copied = true;
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let text = format!("{} {}", theme::icon::PLAY, t("Run self-test"));
+                    if theme::primary_button(ui, !running && !self.worker.busy(), &text).clicked() {
+                        self.start_selftest();
                     }
-                }
+                    let copy = egui::Button::new(format!("{} {}", theme::icon::COPY, t("Copy report")));
+                    if ui.add_enabled(!running && report.is_some(), copy).clicked() {
+                        if let Some(md) = report.clone() {
+                            ui.ctx().copy_text(md);
+                            copied = true;
+                        }
+                    }
+                });
             });
             if copied {
                 let text = t("Report copied to the clipboard").to_string();
                 self.toast(ToastKind::Success, text);
             }
             let Some(st) = &self.selftest else { return };
-            ui.add_space(8.0);
-            for (i, step) in Step::ALL.iter().enumerate() {
-                ui.separator();
-                ui.horizontal(|ui| {
-                    let r = st.results.get(i);
-                    let current = st.running && i == st.results.len();
-                    let (text, color) = match r.map(|r| r.outcome) {
-                        Some(Outcome::Passed) => (t("passed"), Color32::from_rgb(90, 190, 90)),
-                        Some(Outcome::Failed) => (t("FAILED"), ui.visuals().error_fg_color),
-                        Some(Outcome::Skipped) => (t("skipped"), Color32::GRAY),
-                        None if current => (t("running…"), ui.visuals().text_color()),
-                        None => (t("pending"), ui.visuals().weak_text_color()),
-                    };
-                    ui.add_sized([90.0, 18.0], egui::Label::new(RichText::new(text).color(color).strong()));
-                    ui.label(RichText::new(t(step.title())).strong());
-                    match r.and_then(|r| r.restored) {
-                        Some(true) => {
-                            ui.label(RichText::new(format!("({})", t("restored"))).weak());
-                        }
-                        Some(false) => {
-                            ui.colored_label(ui.visuals().error_fg_color, format!("({})", t("NOT restored")));
-                        }
-                        None => {}
+            ui.add_space(12.0);
+            theme::card(ui, t("Steps"), |ui| {
+                for (i, step) in Step::ALL.iter().enumerate() {
+                    if i > 0 {
+                        ui.separator();
                     }
-                    if r.is_none() && current {
-                        ui.spinner();
-                    }
-                });
-                if let Some(r) = st.results.get(i) {
-                    ui.indent(i, |ui| {
-                        for d in &r.details {
-                            ui.add(egui::Label::new(RichText::new(d).small()).wrap());
+                    ui.horizontal(|ui| {
+                        let r = st.results.get(i);
+                        let current = st.running && i == st.results.len();
+                        let (glyph, text, color) = match r.map(|r| r.outcome) {
+                            Some(Outcome::Passed) => (theme::icon::CHECK_CIRCLE, t("passed"), pal.ok),
+                            Some(Outcome::Failed) => (theme::icon::X_CIRCLE, t("FAILED"), pal.error),
+                            Some(Outcome::Skipped) => (theme::icon::MINUS_CIRCLE, t("skipped"), pal.text_dim),
+                            None if current => (theme::icon::SPINNER, t("running…"), pal.accent),
+                            None => (theme::icon::CIRCLE, t("pending"), pal.text_dim),
+                        };
+                        ui.allocate_ui(egui::vec2(120.0, 24.0), |ui| {
+                            theme::pill(ui, &format!("{glyph} {text}"), color)
+                        });
+                        ui.label(RichText::new(t(step.title())).color(pal.text_strong));
+                        match r.and_then(|r| r.restored) {
+                            Some(true) => {
+                                ui.label(RichText::new(format!("({})", t("restored"))).weak());
+                            }
+                            Some(false) => {
+                                ui.colored_label(ui.visuals().error_fg_color, format!("({})", t("NOT restored")));
+                            }
+                            None => {}
                         }
-                        if let Some(e) = &r.error {
-                            let c =
-                                if r.outcome == Outcome::Failed { ui.visuals().error_fg_color } else { Color32::GRAY };
-                            ui.add(egui::Label::new(RichText::new(e).small().color(c)).wrap());
+                        if r.is_none() && current {
+                            ui.spinner();
                         }
                     });
+                    if let Some(r) = st.results.get(i) {
+                        ui.indent(i, |ui| {
+                            for d in &r.details {
+                                ui.add(egui::Label::new(RichText::new(d).small().color(pal.text_dim)).wrap());
+                            }
+                            if let Some(e) = &r.error {
+                                let c = if r.outcome == Outcome::Failed { pal.error } else { pal.text_dim };
+                                ui.add(egui::Label::new(RichText::new(e).small().color(c)).wrap());
+                            }
+                        });
+                    }
                 }
-            }
-            ui.separator();
+            });
             if let Some(md) = report {
-                egui::CollapsingHeader::new(t("Report preview")).show(ui, |ui| {
-                    ui.add(egui::TextEdit::multiline(&mut md.as_str()).code_editor().desired_width(f32::INFINITY));
+                ui.add_space(12.0);
+                theme::card(ui, "", |ui| {
+                    egui::CollapsingHeader::new(t("Report preview")).show(ui, |ui| {
+                        ui.add(egui::TextEdit::multiline(&mut md.as_str()).code_editor().desired_width(f32::INFINITY));
+                    });
                 });
             }
         });
@@ -147,38 +160,41 @@ impl App {
     fn probe_panel(&mut self, ui: &mut egui::Ui) {
         let lang = self.lang;
         let t = |s| tr(lang, s);
-        ui.heading(t("Read-only probe"));
-        ui.label(t(PROBE_INTRO));
-        ui.add_space(8.0);
-        let output = self.probe.as_ref().map(|lines| {
-            format!(
-                "{APP} ({} {})\n\n```text\n{}\n```\n",
-                std::env::consts::OS,
-                std::env::consts::ARCH,
-                lines.join("\n")
-            )
-        });
-        let mut copied = false;
-        ui.horizontal(|ui| {
-            if ui.add_enabled(!self.worker.busy(), egui::Button::new(t("Run probe"))).clicked() {
-                self.run_probe();
-            }
-            if ui.add_enabled(output.is_some(), egui::Button::new(t("Copy output"))).clicked() {
-                if let Some(o) = output.clone() {
-                    ui.ctx().copy_text(o);
-                    copied = true;
-                }
-            }
-        });
-        if copied {
-            let text = t("Output copied to the clipboard").to_string();
-            self.toast(ToastKind::Success, text);
-        }
-        if let Some(lines) = &self.probe {
+        theme::card(ui, t("Read-only probe"), |ui| {
+            ui.label(t(PROBE_INTRO));
             ui.add_space(8.0);
-            let text = lines.join("\n");
-            ui.add(egui::TextEdit::multiline(&mut text.as_str()).code_editor().desired_width(f32::INFINITY));
-        }
+            let output = self.probe.as_ref().map(|lines| {
+                format!(
+                    "{APP} ({} {})\n\n```text\n{}\n```\n",
+                    std::env::consts::OS,
+                    std::env::consts::ARCH,
+                    lines.join("\n")
+                )
+            });
+            let mut copied = false;
+            ui.horizontal(|ui| {
+                let text = format!("{} {}", theme::icon::MAGNIFYING_GLASS, t("Run probe"));
+                if theme::primary_button(ui, !self.worker.busy(), &text).clicked() {
+                    self.run_probe();
+                }
+                let copy = egui::Button::new(format!("{} {}", theme::icon::COPY, t("Copy output")));
+                if ui.add_enabled(output.is_some(), copy).clicked() {
+                    if let Some(o) = output.clone() {
+                        ui.ctx().copy_text(o);
+                        copied = true;
+                    }
+                }
+            });
+            if copied {
+                let text = t("Output copied to the clipboard").to_string();
+                self.toast(ToastKind::Success, text);
+            }
+            if let Some(lines) = &self.probe {
+                ui.add_space(8.0);
+                let text = lines.join("\n");
+                ui.add(egui::TextEdit::multiline(&mut text.as_str()).code_editor().desired_width(f32::INFINITY));
+            }
+        });
     }
 }
 

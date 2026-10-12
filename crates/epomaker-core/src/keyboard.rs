@@ -66,6 +66,15 @@ impl Keyboard {
         Keyboard::connect(Box::new(emu), id < 0)
     }
 
+    /// Delays between reports and retries of failed transfers (see [`Pacing`]).
+    pub fn pacing(&self) -> Pacing {
+        self.link.pacing
+    }
+
+    pub fn set_pacing(&mut self, pacing: Pacing) {
+        self.link.pacing = pacing;
+    }
+
     pub fn set_trace(&mut self, on: bool) {
         self.link.trace = on;
     }
@@ -126,7 +135,7 @@ impl Keyboard {
 
     pub fn set_light(&mut self, effect: &LightEffect) -> Result<(), Error> {
         let frame = effect.encode();
-        self.link.write(&frame)?;
+        self.link.write_light(&frame)?;
         sleep(self.link.pacing.after_light);
         if self.verify {
             // compare what the decoder makes of both, so fields the effect ignores do not count
@@ -155,7 +164,7 @@ impl Keyboard {
     pub fn set_light_raw(&mut self, raw: &[u8; 7]) -> Result<(), Error> {
         let mut r = report_from(&[cmd::SET_LED]);
         r[1..8].copy_from_slice(raw);
-        self.link.write(&Frame::new(r, Checksum::Bit8))?;
+        self.link.write_light(&Frame::new(r, Checksum::Bit8))?;
         sleep(self.link.pacing.after_light);
         if self.verify {
             let got = self.light_raw()?;
@@ -210,12 +219,12 @@ impl Keyboard {
     /// must be on [`LightMode::MusicFollow2`](crate::lighting::LightMode) or `MusicFollow3`
     /// and frames must keep coming (~every 30 ms) for it to animate.
     pub fn send_music_levels(&mut self, levels: &[u8]) -> Result<(), Error> {
-        self.link.write(&crate::live::encode_music_frame(levels))
+        self.link.write_once(&crate::live::encode_music_frame(levels))
     }
 
     /// Sends the current screen color for the "screen color" effect (~every 40 ms).
     pub fn send_screen_color(&mut self, color: Rgb) -> Result<(), Error> {
-        self.link.write(&crate::live::encode_screen_color(color))
+        self.link.write_once(&crate::live::encode_screen_color(color))
     }
 
     // ---- per-profile settings ----

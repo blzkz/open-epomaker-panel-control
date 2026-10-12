@@ -1169,6 +1169,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui-phosphor"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f4299551488dddaa8f757727e1eb4ffdaf277ffe6e30b413403468f5ecf4634"
+dependencies = [
+ "egui",
+]
+
+[[package]]
 name = "egui-wgpu"
 version = "0.36.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1336,7 +1345,7 @@ checksum = "773fa9c96dd0dbef887e39d0ed6177f141cce4d68e6041df77570aa3702dfa13"
 
 [[package]]
 name = "epomaker-agent"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "ctrlc",
  "env_logger",
@@ -1354,7 +1363,7 @@ dependencies = [
 
 [[package]]
 name = "epomaker-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "clap",
  "clap_complete",
@@ -1368,7 +1377,7 @@ dependencies = [
 
 [[package]]
 name = "epomaker-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "hidapi",
  "log",
@@ -1379,9 +1388,10 @@ dependencies = [
 
 [[package]]
 name = "epomaker-gui"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "eframe",
+ "egui-phosphor",
  "env_logger",
  "epomaker-core",
  "epomaker-host",
@@ -1389,12 +1399,14 @@ dependencies = [
  "png",
  "serde",
  "serde_json",
+ "windows-sys 0.61.2",
+ "winit",
  "winresource",
 ]
 
 [[package]]
 name = "epomaker-host"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "cpal",
  "epomaker-core",

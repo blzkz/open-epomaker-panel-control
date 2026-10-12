@@ -26,6 +26,57 @@ impl Lang {
 }
 
 const ES: &[(&str, &str)] = &[
+    ("Probe", "Sondeo"),
+    ("Self-test", "Autotest"),
+    ("Verify writes", "Verificar escrituras"),
+    ("2.4 GHz receiver", "Receptor 2,4 GHz"),
+    ("Accent color", "Color de acento"),
+    ("Backlight effect, speed, brightness and color.", "Efecto, velocidad, brillo y color de la retroiluminación."),
+    ("Backup file", "Archivo de copia"),
+    ("Check that this panel works with your keyboard, and gather data for a bug report.", "Comprueba que este panel funciona con tu teclado y reúne datos para informar de errores."),
+    ("Click a key to choose what it sends, for each profile and Fn layer.", "Haz clic en una tecla para elegir qué envía, en cada perfil y capa Fn."),
+    ("Click to read it again.", "Haz clic para volver a leerla."),
+    ("Connecting…", "Conectando…"),
+    ("Connection", "Conexión"),
+    ("Demo, no hardware", "Demo, sin hardware"),
+    ("Effects", "Efectos"),
+    ("Erases every profile, key mapping, macro and lighting setting.", "Borra todos los perfiles, asignaciones, macros y ajustes de iluminación."),
+    ("Includes every profile, the Fn layers, macros, lighting, per-key colors and settings.", "Incluye todos los perfiles, las capas Fn, las macros, la iluminación, los colores por tecla y los ajustes."),
+    ("Keycap legends", "Leyendas de las teclas"),
+    ("Model", "Modelo"),
+    ("Options apply to the active profile; switch profiles in the header.", "Las opciones son del perfil activo; el perfil se cambia en la cabecera."),
+    ("Paint the custom picture key by key.", "Pinta la imagen personalizada tecla a tecla."),
+    ("Plug in a keyboard, or pick a demo model on the right.", "Conecta un teclado o elige un modelo de demostración a la derecha."),
+    ("Polling rate, keyboard options, debounce and sleep timers.", "Frecuencia de sondeo, opciones del teclado, antirrebote y reposo."),
+    ("Record or edit key sequences, then assign them to keys.", "Graba o edita secuencias de teclas y asígnalas a teclas."),
+    ("Selection", "Selección"),
+    ("Slots", "Ranuras"),
+    ("Typing", "Escritura"),
+    ("USB keyboard", "Teclado USB"),
+    ("not detected", "no detectado"),
+    ("Tools", "Herramientas"),
+    ("System", "Sistema"),
+    ("Cyan", "Cian"),
+    ("Green", "Verde"),
+    ("Violet", "Violeta"),
+    ("Orange", "Naranja"),
+    ("Red", "Rojo"),
+    ("Same as the system", "Igual que el sistema"),
+    ("As in the keyboard data", "Como en los datos del teclado"),
+    ("English (US)", "Inglés (EE. UU.)"),
+    ("English (UK)", "Inglés (Reino Unido)"),
+    ("Spanish (Spain)", "Español (España)"),
+    ("Spanish (Latin America)", "Español (Latinoamérica)"),
+    ("Portuguese", "Portugués"),
+    ("German", "Alemán"),
+    ("French", "Francés"),
+    ("Italian", "Italiano"),
+    ("Last events", "Últimos eventos"),
+    ("Press any key…", "Pulsa cualquier tecla…"),
+    ("Caps Lock and similar keys cannot be detected", "No se pueden detectar Bloq Mayús y teclas similares"),
+    ("Status", "Estado"),
+    ("Other", "Otros"),
+    ("Steps", "Pasos"),
     ("Add mouse move", "Añadir movimiento de ratón"),
     ("Export", "Exportar"),
     ("Import", "Importar"),
@@ -463,6 +514,10 @@ mod tests {
         ("editors.rs", include_str!("editors.rs")),
         ("picker.rs", include_str!("picker.rs")),
         ("udev.rs", include_str!("udev.rs")),
+        ("theme.rs", include_str!("theme.rs")),
+        ("app/tester.rs", include_str!("app/tester.rs")),
+        ("app/agent.rs", include_str!("app/agent.rs")),
+        ("app/diagnostics.rs", include_str!("app/diagnostics.rs")),
     ];
 
     /// Reads the Rust string literal starting right after its opening quote.
@@ -531,6 +586,7 @@ mod tests {
                 wanted.extend(caps.options.iter().map(|o| option_label(o).to_string()));
             }
         }
+        wanted.extend(crate::legends::Legend::ALL.iter().map(|l| l.label().to_string()));
         wanted.retain(|s| s.chars().any(char::is_alphabetic) && !s.contains('{'));
         wanted.sort();
         wanted.dedup();

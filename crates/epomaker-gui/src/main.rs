@@ -6,8 +6,11 @@ mod editors;
 mod hidmap;
 mod i18n;
 mod keyboard_view;
+mod legends;
 mod picker;
 mod preview;
+mod rawkeys;
+mod theme;
 #[cfg(target_os = "linux")]
 mod udev;
 mod worker;
@@ -24,6 +27,7 @@ fn main() -> eframe::Result {
                 eframe::icon_data::from_png_bytes(include_bytes!("../../../packaging/icons/open-epomaker-panel.png"))
                     .unwrap_or_default(),
             ),
+        event_loop_builder: Some(Box::new(rawkeys::install)),
         ..Default::default()
     };
     // screenshots must not depend on (or overwrite) the saved window size
