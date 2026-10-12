@@ -60,6 +60,9 @@ pub struct EmulatorState {
     /// Every report received, in order (with checksum).
     pub log: Vec<Report>,
     pub checksum_errors: usize,
+    /// Like the real firmware: key, polling rate and option writes go to the active
+    /// profile whatever profile the report names. Off: they go to the named profile.
+    pub writes_follow_active_profile: bool,
     /// Active faults and how many more reports each one affects (`None` = forever).
     pub faults: Vec<(Fault, Option<usize>)>,
 }
@@ -85,6 +88,7 @@ impl EmulatorState {
             screen_color: [0; 3],
             log: vec![],
             checksum_errors: 0,
+            writes_follow_active_profile: true,
             faults: vec![],
         };
         s.factory_reset(model);
@@ -198,6 +202,10 @@ impl Emulator {
         let r = &r;
         resp[0] = c;
         let p = |x: u8| (x as usize).min(PROFILES - 1);
+        // profile that a per-profile write lands on
+        let active = s.profile as usize;
+        let follow = s.writes_follow_active_profile;
+        let wp = |x: u8| if follow { active } else { p(x) };
         let data = &r[8..];
         match c {
             cmd::GET_FIRMWARE => resp[1..3].copy_from_slice(&s.firmware.to_le_bytes()),
@@ -209,12 +217,12 @@ impl Emulator {
             cmd::RESET => s.factory_reset(self.model),
             cmd::SET_PROFILE => s.profile = r[1].min(PROFILES as u8 - 1),
             cmd::GET_PROFILE => resp[1] = s.profile,
-            cmd::SET_REPORT_RATE => s.report_rate[p(r[1])] = r[2],
+            cmd::SET_REPORT_RATE => s.report_rate[wp(r[1])] = r[2],
             cmd::GET_REPORT_RATE => {
                 resp[1] = r[1];
                 resp[2] = s.report_rate[p(r[1])];
             }
-            cmd::SET_KB_OPTION => s.options[p(r[1])] = [r[2], r[3], r[4]],
+            cmd::SET_KB_OPTION => s.options[wp(r[1])] = [r[2], r[3], r[4]],
             cmd::GET_KB_OPTION => {
                 resp[1] = r[1];
                 resp[2..5].copy_from_slice(&s.options[p(r[1])]);
@@ -232,7 +240,7 @@ impl Emulator {
             cmd::SET_KEY_SIMPLE | cmd::SET_FN_SIMPLE => {
                 let idx = r[2] as usize * 4;
                 let target = if c == cmd::SET_KEY_SIMPLE {
-                    let i = p(r[1]);
+                    let i = wp(r[1]);
                     &mut s.matrices[i]
                 } else {
                     let i = (r[1] as usize).min(s.fn_matrices.len() - 1);
@@ -245,7 +253,7 @@ impl Emulator {
             cmd::SET_KEY_MATRIX | cmd::SET_FN_MATRIX => {
                 let off = r[4] as usize * 56;
                 let target = if c == cmd::SET_KEY_MATRIX {
-                    let i = p(r[1]);
+                    let i = wp(r[1]);
                     &mut s.matrices[i]
                 } else {
                     let i = (r[1] as usize).min(s.fn_matrices.len() - 1);

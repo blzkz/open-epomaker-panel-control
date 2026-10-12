@@ -198,3 +198,42 @@ fn host_streamed_effects() {
     assert_eq!(s.screen_color, [0x12, 0x34, 0x56]);
     assert_eq!(s.checksum_errors, 0);
 }
+
+#[test]
+fn writes_to_another_profile_activate_it_first() {
+    use epomaker_core::protocol::cmd;
+    let (mut kb, emu) = kb();
+    kb.set_verify(true);
+    let profile = |emu: &Emulator, p: usize| emu.state.lock().unwrap().matrices[p].clone();
+    let before = profile(&emu, 0);
+    let n = emu.state.lock().unwrap().log.len();
+    // profile 1 (index 0) is active; remap a key of profile 3
+    kb.set_key(Layer::Profile(2), 5, KeyAction::key(0x68)).unwrap();
+    kb.set_report_rate(1, ReportRate::Hz250).unwrap();
+    let opts = KeyboardOptions { mac_mode: true, ..Default::default() };
+    kb.set_options(2, &opts).unwrap();
+    let s = emu.state.lock().unwrap();
+    assert_eq!(s.profile, 0, "the active profile is restored");
+    assert_eq!(&s.matrices[2][20..24], &KeyAction::key(0x68).to_bytes());
+    assert_eq!(s.matrices[0], before, "the active profile is untouched");
+    assert_eq!(s.report_rate[1], ReportRate::Hz250.encode(1).wire_bytes()[2]);
+    assert_eq!(s.report_rate[0], 1);
+    let switches: Vec<u8> = s.log[n..].iter().filter(|r| r[0] == cmd::SET_PROFILE).map(|r| r[1]).collect();
+    assert_eq!(switches, vec![2, 0, 1, 0, 2, 0]);
+    drop(s);
+    assert!(kb.options(2).unwrap().mac_mode && !kb.options(0).unwrap().mac_mode);
+    // writes to the active profile do not switch
+    let n = emu.state.lock().unwrap().log.len();
+    kb.set_key(Layer::Profile(0), 5, KeyAction::key(0x69)).unwrap();
+    assert!(emu.state.lock().unwrap().log[n..].iter().all(|r| r[0] != cmd::SET_PROFILE));
+}
+
+#[test]
+fn iso_models_are_named_as_such() {
+    let db = epomaker_core::devices::Database::get();
+    let uk = db.model("yc500_th80_uk").unwrap();
+    let ansi = db.model("yc500_th80").unwrap();
+    assert!(uk.is_iso() && !ansi.is_iso());
+    assert_eq!(uk.display_name("TH80"), "TH80 ISO");
+    assert_eq!(ansi.display_name("TH80"), "TH80");
+}

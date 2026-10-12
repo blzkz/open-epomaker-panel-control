@@ -49,6 +49,8 @@ pub struct Pacing {
     /// Extra wait before a lighting write (`writeFeatureCmd(buf, 1, 500)` in the vendor app).
     pub before_light: Duration,
     pub after_light: Duration,
+    /// After a single-key remap (the vendor app waits 50 ms after layer writes).
+    pub after_key: Duration,
     pub after_big_command: Duration,
     /// Waits before each new attempt when a transfer fails. The firmware stalls USB
     /// requests for a moment while it saves settings (Windows reports
@@ -67,6 +69,7 @@ impl Default for Pacing {
             before_read: Duration::from_millis(5),
             before_light: Duration::from_millis(500),
             after_light: Duration::from_millis(500),
+            after_key: Duration::from_millis(50),
             after_big_command: Duration::from_millis(1000),
             retry_backoff: &BACKOFF,
         }
@@ -81,6 +84,7 @@ impl Pacing {
             before_read: Duration::ZERO,
             before_light: Duration::ZERO,
             after_light: Duration::ZERO,
+            after_key: Duration::ZERO,
             after_big_command: Duration::ZERO,
             retry_backoff: &[],
         }
@@ -94,6 +98,7 @@ impl Pacing {
             before_read: f(self.before_read),
             before_light: f(self.before_light),
             after_light: f(self.after_light),
+            after_key: f(self.after_key),
             after_big_command: f(self.after_big_command),
             retry_backoff: self.retry_backoff,
         }

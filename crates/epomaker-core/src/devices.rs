@@ -63,6 +63,22 @@ pub struct ModelInfo {
 }
 
 impl ModelInfo {
+    /// ISO layout (extra key next to the left Shift). The vendor data names these models
+    /// after the UK version (`yc500_th80_uk`), but every ISO national version (Spanish,
+    /// German…) reports the same id: only the printed legends differ.
+    pub fn is_iso(&self) -> bool {
+        self.keys.iter().any(|k| k.code == 0x64 && k.matrix_index.is_some())
+    }
+
+    /// Name for people: "TH80 ISO" for ISO boards.
+    pub fn display_name(&self, base: &str) -> String {
+        if self.is_iso() {
+            format!("{base} ISO")
+        } else {
+            base.to_string()
+        }
+    }
+
     pub fn matrix_len(&self) -> usize {
         self.default_matrix.len() / 4
     }

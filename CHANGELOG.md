@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Key remaps, polling rate and options for a profile that is not the active one did not
+  stick on real hardware: the firmware applies them to the active profile only, like the
+  vendor app assumes. The keyboard now activates the target profile for the write and
+  switches back afterwards. The emulator behaves the same way.
+- ISO keyboards are shown as "TH80 ISO" instead of the vendor's internal `…_uk` name;
+  the self-test report explains that every ISO version reports the UK id.
+
 ## 0.4.0 — 2026-10-12
 
 - Writes on real hardware: failed transfers are retried with growing pauses (and the
