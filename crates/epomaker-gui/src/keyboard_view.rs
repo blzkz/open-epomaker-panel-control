@@ -112,6 +112,37 @@ impl Geometry {
 
         let mut knob = find_knob(model, &geo);
         let mut size = size;
+
+        // the vendor draws small keys far apart (its keycap pictures fill the gaps): grow
+        // every key into half of the usual gap to its neighbours
+        let same_row = |a: &GeoKey, b: &GeoKey| (a.rect.top() - b.rect.top()).abs() <= unit * 0.4;
+        let mut gaps_x: Vec<f32> = geo
+            .iter()
+            .filter_map(|a| {
+                geo.iter()
+                    .filter(|b| same_row(a, b))
+                    .map(|b| b.rect.left() - a.rect.right())
+                    .filter(|g| *g >= 0.0 && *g < unit * 0.6)
+                    .min_by(f32::total_cmp)
+            })
+            .collect();
+        let mut gaps_y: Vec<f32> =
+            row_tops.windows(2).map(|w| w[1] - w[0] - unit).filter(|g| *g >= 0.0 && *g < unit * 0.6).collect();
+        let median = |v: &mut Vec<f32>| {
+            v.sort_by(f32::total_cmp);
+            v.get(v.len() / 2).copied().unwrap_or(0.0)
+        };
+        let grow = Vec2::new(median(&mut gaps_x), median(&mut gaps_y)) / 2.0;
+        if grow != Vec2::ZERO {
+            size += grow * 2.0;
+            for g in &mut geo {
+                g.rect = g.rect.expand2(grow).translate(grow);
+                g.spot.pos = Vec2::new(g.rect.center().x / size.x, g.rect.center().y / size.y);
+            }
+            if let Some(k) = &mut knob {
+                k.center += grow;
+            }
+        }
         if let Some(k) = &mut knob {
             // the dial may grow past the keys: make room for it
             let dial = Rect::from_center_size(k.center, Vec2::splat(2.0 * k.radius + 8.0));

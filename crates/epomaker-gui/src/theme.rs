@@ -483,8 +483,8 @@ pub fn keycap(painter: &egui::Painter, rect: egui::Rect, fill: Color32) {
     let skirt = mix(fill, Color32::BLACK, 0.38);
     painter.rect_filled(rect, CornerRadius::same(5), skirt);
     let top = egui::Rect::from_min_max(
-        rect.min + Vec2::new(2.5 * unit, 1.5 * unit),
-        rect.max - Vec2::new(2.5 * unit, 4.0 * unit),
+        rect.min + Vec2::new(1.8 * unit, 1.0 * unit),
+        rect.max - Vec2::new(1.8 * unit, 3.2 * unit),
     );
     painter.rect_filled(top, CornerRadius::same(4), fill);
 }
