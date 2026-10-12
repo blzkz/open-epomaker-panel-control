@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — 2026-10-12
 
 - Writes on real hardware: failed transfers are retried with growing pauses (and the
   device reopened), lighting writes wait 500 ms first like the vendor app, and the
@@ -18,6 +18,7 @@
 - New look: Fira Sans, dark theme by default with a choice of accent color, sidebar with
   icons and sections, device header (battery, profile switcher, connection), card-based
   tabs, switches and segmented buttons. The redundant title bar text is gone.
+  Keys are drawn at full size, like keycaps, instead of the vendor's spaced-out geometry.
 
 ## 0.3.0 — 2026-10-12
 
