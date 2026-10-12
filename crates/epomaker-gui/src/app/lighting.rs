@@ -4,6 +4,7 @@ use super::App;
 use crate::i18n::{option_label, tr};
 use crate::keyboard_view::{self, KeyStyle};
 use crate::preview::{self, Sim, Spot};
+use crate::theme;
 use eframe::egui::{self, Color32, CornerRadius, Rect, RichText, Sense, Slider, Stroke, StrokeKind, Vec2};
 use epomaker_core::lighting::{LightEffect, LightMode, Rgb};
 use epomaker_host::stream::{Frame, LiveEffect};
@@ -45,105 +46,126 @@ impl App {
         modes.extend(model.light_modes.iter().map(|c| c.mode));
         let mut changed = false;
         let params_w = 340.0;
+        let p = theme::palette(ui);
+        let height = ui.available_height();
         ui.horizontal_top(|ui| {
-            let cards_w = (ui.available_width() - params_w - 16.0).max(CARD.x + 20.0);
-            ui.allocate_ui(Vec2::new(cards_w, ui.available_height()), |ui| {
-                egui::ScrollArea::vertical().id_salt("effects").auto_shrink([false, false]).show(ui, |ui| {
-                    // stretch the cards so that each row fills the width
-                    let gap = 6.0;
-                    let width = ui.available_width() - 2.0;
-                    let cols = ((width + gap) / (CARD.x + gap)).floor().max(1.0);
-                    let card = Vec2::new((width - gap * (cols - 1.0)) / cols, CARD.y);
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing = Vec2::splat(gap);
-                        for m in &modes {
-                            let selected = self.light.mode == *m;
-                            let resp = effect_card(ui, *m, selected, card, &self.light, model, &user_colors, now, lang);
-                            if resp.clicked() && !selected {
-                                self.light.mode = *m;
-                                self.light.option = 0;
-                                if let Some(c) = model.caps(*m) {
-                                    if !c.rgb && c.dazzle {
-                                        self.light.dazzle = true;
+            ui.spacing_mut().item_spacing.x = 14.0;
+            let cards_w = (ui.available_width() - params_w - 14.0).max(CARD.x + 40.0);
+            ui.allocate_ui_with_layout(Vec2::new(cards_w, height), egui::Layout::top_down(egui::Align::Min), |ui| {
+                theme::card(ui, t("Effects"), |ui| {
+                    egui::ScrollArea::vertical().id_salt("effects").auto_shrink([false, false]).show(ui, |ui| {
+                        // stretch the cards so that each row fills the width
+                        let gap = 8.0;
+                        let width = ui.available_width() - 2.0;
+                        let cols = ((width + gap) / (CARD.x + gap)).floor().max(1.0);
+                        let card = Vec2::new((width - gap * (cols - 1.0)) / cols, CARD.y);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing = Vec2::splat(gap);
+                            for m in &modes {
+                                let selected = self.light.mode == *m;
+                                let resp =
+                                    effect_card(ui, *m, selected, card, &self.light, model, &user_colors, now, lang);
+                                if resp.clicked() && !selected {
+                                    self.light.mode = *m;
+                                    self.light.option = 0;
+                                    if let Some(c) = model.caps(*m) {
+                                        if !c.rgb && c.dazzle {
+                                            self.light.dazzle = true;
+                                        }
+                                        if let Some(max) = c.max_brightness {
+                                            self.light.brightness = self.light.brightness.min(max);
+                                        }
                                     }
-                                    if let Some(max) = c.max_brightness {
-                                        self.light.brightness = self.light.brightness.min(max);
-                                    }
+                                    changed = true;
                                 }
-                                changed = true;
                             }
-                        }
+                        });
                     });
                 });
             });
-            ui.separator();
-            ui.vertical(|ui| {
-                ui.set_width(params_w);
-                ui.label(RichText::new(t(self.light.mode.label())).heading().strong());
-                ui.add_space(4.0);
-                egui::Grid::new("light").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
-                    if let Some(c) = &caps {
-                        if let Some(max) = c.max_speed.filter(|_| self.light.mode.uses_speed()) {
-                            ui.label(t("Speed"));
-                            changed |= ui.add(Slider::new(&mut self.light.speed, 0..=max)).changed();
-                            ui.end_row();
-                        }
-                        if let Some(max) = c.max_brightness {
-                            ui.label(t("Brightness"));
-                            changed |= ui.add(Slider::new(&mut self.light.brightness, 0..=max)).changed();
-                            ui.end_row();
-                        }
-                        if !c.options.is_empty() {
-                            ui.label(t("Direction / variant"));
-                            ui.horizontal_wrapped(|ui| {
-                                for (i, o) in c.options.iter().enumerate() {
-                                    let text = t(option_label(o));
-                                    changed |= ui.selectable_value(&mut self.light.option, i as u8, text).changed();
+            ui.allocate_ui_with_layout(Vec2::new(params_w, height), egui::Layout::top_down(egui::Align::Min), |ui| {
+                egui::ScrollArea::vertical().id_salt("light_params").auto_shrink([false, false]).show(ui, |ui| {
+                    theme::card(ui, "", |ui| {
+                        ui.label(
+                            RichText::new(t(self.light.mode.label()).to_uppercase())
+                                .size(20.0)
+                                .family(theme::display())
+                                .color(p.text_strong),
+                        );
+                        ui.add_space(6.0);
+                        egui::Grid::new("light").num_columns(2).spacing([14.0, 12.0]).show(ui, |ui| {
+                            if let Some(c) = &caps {
+                                if let Some(max) = c.max_speed.filter(|_| self.light.mode.uses_speed()) {
+                                    ui.label(t("Speed"));
+                                    changed |= ui.add(Slider::new(&mut self.light.speed, 0..=max)).changed();
+                                    ui.end_row();
                                 }
-                            });
-                            ui.end_row();
+                                if let Some(max) = c.max_brightness {
+                                    ui.label(t("Brightness"));
+                                    changed |= ui.add(Slider::new(&mut self.light.brightness, 0..=max)).changed();
+                                    ui.end_row();
+                                }
+                                if c.rgb && !self.light.dazzle {
+                                    ui.label(t("Color"));
+                                    changed |= color_row(ui, &mut self.light.color);
+                                    ui.end_row();
+                                }
+                            }
+                        });
+                        if let Some(c) = &caps {
+                            if !c.options.is_empty() {
+                                ui.add_space(6.0);
+                                theme::section_label(ui, t("Direction / variant"));
+                                ui.horizontal_wrapped(|ui| {
+                                    for (i, o) in c.options.iter().enumerate() {
+                                        let text = t(option_label(o));
+                                        changed |= ui.selectable_value(&mut self.light.option, i as u8, text).changed();
+                                    }
+                                });
+                            }
+                            if c.dazzle {
+                                ui.add_space(6.0);
+                                changed |=
+                                    theme::toggle_row(ui, &mut self.light.dazzle, t("Rainbow colors"), "").changed();
+                            }
                         }
-                        if c.dazzle {
-                            ui.label("");
-                            changed |= ui.checkbox(&mut self.light.dazzle, t("Rainbow colors")).changed();
-                            ui.end_row();
+                        if self.light.mode.needs_host() {
+                            ui.add_space(6.0);
+                            self.live_panel(ui, host_effect(self.light.mode));
                         }
-                        if c.rgb && !self.light.dazzle {
-                            ui.label(t("Color"));
-                            changed |= color_row(ui, &mut self.light.color);
-                            ui.end_row();
+                        if matches!(self.light.mode, LightMode::UserPicture | LightMode::UserColor) {
+                            ui.add_space(6.0);
+                            ui.weak(t("Paint the keys on the \"Per-key colors\" tab."));
                         }
-                    }
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.add_space(4.0);
+                        let busy = self.worker.busy();
+                        theme::toggle_row(ui, &mut self.light_auto, t("Apply automatically"), "");
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            if theme::primary_button(ui, !busy, t("Apply")).clicked() {
+                                self.send_light();
+                            }
+                            if ui.add_enabled(!busy, egui::Button::new(t("Read from keyboard"))).clicked() {
+                                self.worker.run("Read lighting", |kb| Ok(super::Update::Light(kb.light()?)));
+                            }
+                        });
+                        if self.light_dirty && !self.light_auto {
+                            ui.weak(t("Not applied yet"));
+                        }
+                    });
+                    ui.add_space(12.0);
+                    theme::card(ui, t("PC effects"), |ui| {
+                        ui.label(
+                            RichText::new(t("Lighting computed on this computer; it runs while the panel is open."))
+                                .small()
+                                .color(p.text_dim),
+                        );
+                        ui.add_space(4.0);
+                        self.live_panel(ui, Some(LiveEffect::CpuLoad));
+                    });
                 });
-                if self.light.mode.needs_host() {
-                    ui.add_space(6.0);
-                    self.live_panel(ui, host_effect(self.light.mode));
-                }
-                if matches!(self.light.mode, LightMode::UserPicture | LightMode::UserColor) {
-                    ui.add_space(6.0);
-                    ui.weak(t("Paint the keys on the \"Per-key colors\" tab."));
-                }
-                ui.add_space(12.0);
-                let busy = self.worker.busy();
-                ui.horizontal(|ui| {
-                    ui.checkbox(&mut self.light_auto, t("Apply automatically"));
-                });
-                ui.horizontal(|ui| {
-                    if ui.add_enabled(!busy, egui::Button::new(RichText::new(t("Apply")).strong())).clicked() {
-                        self.send_light();
-                    }
-                    if ui.add_enabled(!busy, egui::Button::new(t("Read from keyboard"))).clicked() {
-                        self.worker.run("Read lighting", |kb| Ok(super::Update::Light(kb.light()?)));
-                    }
-                });
-                if self.light_dirty && !self.light_auto {
-                    ui.weak(t("Not applied yet"));
-                }
-                ui.add_space(14.0);
-                ui.separator();
-                ui.label(RichText::new(t("PC effects")).strong());
-                ui.weak(t("Lighting computed on this computer; it runs while the panel is open."));
-                self.live_panel(ui, Some(LiveEffect::CpuLoad));
             });
         });
         if changed {
@@ -290,17 +312,17 @@ fn effect_card(
     lang: crate::i18n::Lang,
 ) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
-    let v = ui.visuals();
-    let fill = if selected { v.selection.bg_fill.gamma_multiply(0.35) } else { v.widgets.inactive.weak_bg_fill };
-    let stroke = if selected {
-        Stroke::new(2.0, v.selection.stroke.color)
+    let p = theme::palette(ui);
+    let fill = if selected {
+        theme::blend(p.inset, p.accent, 0.14)
     } else if resp.hovered() {
-        v.widgets.hovered.bg_stroke
+        p.control_hover
     } else {
-        v.widgets.noninteractive.bg_stroke
+        p.inset
     };
+    let stroke = if selected { Stroke::new(2.0, p.accent) } else { Stroke::new(1.0, p.border) };
     let painter = ui.painter();
-    painter.rect(rect, CornerRadius::same(6), fill, stroke, StrokeKind::Inside);
+    painter.rect(rect, CornerRadius::same(10), fill, stroke, StrokeKind::Inside);
 
     // thumbnail: a tiny 14 x 4 keyboard
     let caps = model.caps(mode);
@@ -345,7 +367,7 @@ fn effect_card(
     }
     let name = tr(lang, mode.label());
     let font = egui::FontId::proportional(12.0);
-    let text_color = if selected { v.strong_text_color() } else { v.text_color() };
+    let text_color = if selected { p.text_strong } else { p.text };
     let galley = painter.layout(name.to_string(), font, text_color, rect.width() - 10.0);
     let pos = egui::pos2(rect.center().x - galley.size().x / 2.0, thumb.bottom() + 4.0);
     painter.galley(pos, galley, Color32::PLACEHOLDER);

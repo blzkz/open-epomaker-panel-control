@@ -123,6 +123,12 @@ impl Transport for HidTransport {
         Ok(r)
     }
 
+    fn reopen(&mut self) -> Result<(), Error> {
+        let fresh = HidTransport::open(&self.candidate)?;
+        self.device = fresh.device;
+        Ok(())
+    }
+
     fn describe(&self) -> String {
         format!(
             "{:04x}:{:04x} if{} {}",
@@ -133,4 +139,69 @@ impl Transport for HidTransport {
 
 fn hid_err(e: hidapi::HidError) -> Error {
     Error::Hid(e.to_string())
+}
+
+/// The keyboard's own key reports, read from its boot-protocol interface. Shows keys a
+/// windowing toolkit does not report (Caps Lock, Scroll Lock…). Works on Linux with the
+/// udev rule installed; Windows does not let applications open keyboards.
+pub struct KeyReports {
+    device: HidDevice,
+    down: std::collections::BTreeSet<u8>,
+}
+
+impl KeyReports {
+    pub fn open(vid: u16, pid: u16) -> Result<KeyReports, Error> {
+        let api = HidApi::new().map_err(hid_err)?;
+        let ours = |i: &&hidapi::DeviceInfo| i.vendor_id() == vid && i.product_id() == pid;
+        let info = api
+            .device_list()
+            .filter(ours)
+            .find(|i| i.interface_number() == 0 && (i.usage_page(), i.usage()) == (1, 6))
+            .or_else(|| api.device_list().filter(ours).find(|i| i.interface_number() == 0))
+            .ok_or(Error::NotFound)?;
+        let device = info.open_device(&api).map_err(hid_err)?;
+        device.set_blocking_mode(false).map_err(hid_err)?;
+        Ok(KeyReports { device, down: Default::default() })
+    }
+
+    /// Key presses and releases (HID usage, pressed) since the last call.
+    pub fn poll(&mut self) -> Result<Vec<(u8, bool)>, Error> {
+        let mut out = vec![];
+        let mut buf = [0u8; 64];
+        loop {
+            let n = self.device.read(&mut buf).map_err(hid_err)?;
+            if n == 0 {
+                break;
+            }
+            if n == 8 {
+                let now = boot_report_keys(&buf[..8]);
+                out.extend(now.difference(&self.down).map(|k| (*k, true)));
+                out.extend(self.down.difference(&now).map(|k| (*k, false)));
+                self.down = now;
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// Keys held in a boot-protocol keyboard report: modifier bits, then up to 6 usages.
+pub fn boot_report_keys(r: &[u8]) -> std::collections::BTreeSet<u8> {
+    let mut keys: std::collections::BTreeSet<u8> = (0..8).filter(|b| r[0] & (1 << b) != 0).map(|b| 0xE0 + b).collect();
+    // usages 1..=3 are error codes (rollover), not keys
+    if !r[2..8].contains(&1) {
+        keys.extend(r[2..8].iter().copied().filter(|k| *k > 3));
+    }
+    keys
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn boot_reports() {
+        let k = boot_report_keys(&[0x02, 0, 0x39, 0x04, 0, 0, 0, 0]);
+        assert_eq!(k.into_iter().collect::<Vec<_>>(), vec![0x04, 0x39, 0xE1]);
+        assert!(boot_report_keys(&[0, 0, 1, 1, 1, 1, 1, 1]).is_empty());
+    }
 }

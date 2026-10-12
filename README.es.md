@@ -111,6 +111,18 @@ una ranura de macro libre (nunca una asignada a una tecla). Todas las escrituras
 verifican y cada paso restaura el estado original aunque falle; si una restauración no se
 aplica, el informe lo marca como *no restaurado* junto con el valor original.
 
+Las transferencias USB que fallan se reintentan varias veces con pausas crecientes (el
+firmware deja de responder un momento mientras guarda los ajustes). Si aun así fallan
+las escrituras, prueba con la variable de entorno `EPOMAKER_PACING=2` (o `3`), que alarga
+todas las pausas entre informes, y cuéntanos si ayuda.
+
+**Leyendas de las teclas:** el firmware no distingue las distribuciones nacionales: un
+TH80 ISO español se identifica como el modelo ISO del Reino Unido porque las teclas son
+físicamente iguales. Por eso el panel dibuja las leyendas de la distribución de teclado
+del sistema (español, Reino Unido, EE. UU., latinoamericano, portugués, alemán, francés o
+italiano); puedes elegir otra en *Preferencias* (icono del engranaje), donde también
+están el idioma, el tema, el color de acento y el tamaño de la interfaz.
+
 En la misma pestaña está el interruptor **Verificar cada escritura** (activado por
 defecto): cada cambio se vuelve a leer del teclado y, si no coincide, se muestra un error.
 Sin teclado conectado, la pestaña ofrece el sondeo de solo lectura para teclados que no se

@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+- Writes on real hardware: failed transfers are retried with growing pauses (and the
+  device reopened), lighting writes wait 500 ms first like the vendor app, and the
+  self-test pauses before restoring. On Windows the firmware made writes fail with
+  `os error 31` (ERROR_GEN_FAILURE) right after a lighting change. `EPOMAKER_PACING=2`
+  doubles every delay, for troubleshooting.
+- Self-test reports say which operation failed and whether the keyboard still answers.
+- Keycap legends: the firmware reports ISO Spanish keyboards as the ISO UK model (same
+  keys, other legends). The panel now prints the legends of the system keyboard layout,
+  or the ones chosen in *Preferences* (US, UK, Spanish, Latin American, Portuguese,
+  German, French, Italian). Raw labels such as `r_Shift` are cleaned up.
+- Key tester: Caps Lock, Scroll Lock, Pause, Num Lock, Print Screen and Menu are now
+  detected (window messages on Windows, the keyboard's own reports on Linux), and the ISO
+  key next to Enter lights up.
+- New look: Fira Sans, dark theme by default with a choice of accent color, sidebar with
+  icons and sections, device header (battery, profile switcher, connection), card-based
+  tabs, switches and segmented buttons. The redundant title bar text is gone.
+
 ## 0.3.0 — 2026-10-12
 
 - Music-follow (two variants) and screen-color effects: the firmware has them, the

@@ -169,3 +169,27 @@ fn raw_light_roundtrip() {
     kb.set_light_raw(&raw).unwrap();
     assert_eq!(kb.light_raw().unwrap(), raw);
 }
+
+#[test]
+fn failed_transfers_are_retried() {
+    use epomaker_core::transport::Pacing;
+    use std::time::Duration;
+    const THREE: [Duration; 3] = [Duration::ZERO; 3];
+    let (mut kb, emu) = kb();
+    kb.set_pacing(Pacing { retry_backoff: &THREE, ..Pacing::none() });
+    // the firmware stalls a few requests (os error 31 on Windows) and then recovers
+    emu.inject_times(Fault::Fail(cmd::SET_LED), 3);
+    kb.set_light(&LightEffect { mode: LightMode::Breath, ..LightEffect::default() }).unwrap();
+    assert_eq!(kb.light().unwrap().unwrap().mode, LightMode::Breath);
+    emu.inject_times(Fault::Fail(cmd::GET_LED), 2);
+    assert!(kb.light().is_ok());
+    // more failures than retries: the error comes through
+    emu.inject_times(Fault::Fail(cmd::GET_LED), 4);
+    assert!(matches!(kb.light(), Err(Error::Hid(_))));
+    emu.clear_faults();
+    // continuous frames are never retried
+    kb.set_light(&LightEffect { mode: LightMode::ScreenColor, ..LightEffect::default() }).unwrap();
+    emu.inject_times(Fault::Fail(epomaker_core::live::SET_SCREEN_COLOR), 1);
+    assert!(kb.send_screen_color(Rgb(0x102030)).is_err());
+    assert!(kb.send_screen_color(Rgb(0x102030)).is_ok());
+}

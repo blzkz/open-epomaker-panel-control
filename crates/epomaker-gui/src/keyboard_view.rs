@@ -68,7 +68,7 @@ impl Geometry {
                 let idx = k.matrix_index.unwrap_or_default();
                 let pos = Vec2::new(rect.center().x / size.x.max(1.0), rect.center().y / size.y.max(1.0));
                 let spot = Spot { idx, pos, row: 0, rows: 1, order: 0, serp: 0, count: keys.len() };
-                GeoKey { idx, label: k.label.clone(), rect, spot }
+                GeoKey { idx, label: crate::legends::label(k.code, &k.label), rect, spot }
             })
             .collect();
 
@@ -191,7 +191,8 @@ pub fn show(
         })
         .inner;
     let origin = response.rect.min + Vec2::splat(pad);
-    painter.rect_filled(response.rect, CornerRadius::same(10), ui.visuals().extreme_bg_color);
+    let palette = crate::theme::palette(ui);
+    crate::theme::keyboard_case(&painter, response.rect, &palette);
     let to_screen = |r: Rect| Rect::from_min_max(origin + r.min.to_vec2() * scale, origin + r.max.to_vec2() * scale);
 
     let pointer = response.interact_pointer_pos().or(response.hover_pos());
@@ -199,9 +200,9 @@ pub fn show(
     let mut tooltip = String::new();
     let mut rects = Vec::with_capacity(geo.keys.len());
     let font = FontId::proportional((10.5 * scale).clamp(8.0, 14.0));
-    let idle_stroke = Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color);
-    let hover_stroke = Stroke::new(1.5, ui.visuals().widgets.hovered.fg_stroke.color);
-    let select_stroke = Stroke::new(2.5, ui.visuals().selection.stroke.color);
+    let idle_stroke = Stroke::new(1.0, palette.border);
+    let hover_stroke = Stroke::new(1.5, palette.text_strong.gamma_multiply(0.8));
+    let select_stroke = Stroke::new(2.5, palette.accent);
     let mut knob_styles: Vec<(usize, KeyStyle)> = vec![];
     for k in &geo.keys {
         let rect = to_screen(k.rect).shrink(1.5);
@@ -216,22 +217,26 @@ pub fn show(
             hovered = Some(k.idx);
             tooltip = s.tooltip.clone();
         }
-        painter.rect_filled(rect, CornerRadius::same(4), s.fill);
+        crate::theme::keycap(&painter, rect, s.fill);
         let stroke = if s.highlight {
-            select_stroke
+            Some(select_stroke)
         } else if is_hover {
-            hover_stroke
+            Some(hover_stroke)
         } else {
-            idle_stroke
+            None
         };
-        painter.rect_stroke(rect, CornerRadius::same(4), stroke, StrokeKind::Inside);
+        if let Some(stroke) = stroke {
+            painter.rect_stroke(rect.expand(1.0), CornerRadius::same(6), stroke, StrokeKind::Outside);
+        }
         // shrink long labels a little before cutting them
         let mut size = font.size;
         while size > 8.0 && s.text.lines().any(|l| l.chars().count() as f32 * size * 0.55 > rect.width()) {
             size -= 0.5;
         }
         let text = fit(&s.text, rect.width(), size);
-        painter.text(rect.center(), Align2::CENTER_CENTER, text, FontId::proportional(size), s.text_color);
+        // centered on the top face of the keycap, which sits a little above the middle
+        let face = rect.center() - Vec2::new(0.0, (rect.height() / 40.0).clamp(0.6, 1.6) * 1.25);
+        painter.text(face, Align2::CENTER_CENTER, text, FontId::proportional(size), s.text_color);
     }
 
     if let Some(knob) = &geo.knob {

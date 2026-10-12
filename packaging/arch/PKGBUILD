@@ -5,7 +5,7 @@ pkgrel=1
 pkgdesc="Open-source control panel for EPOMAKER keyboards (TH80 family)"
 arch=('x86_64')
 url="https://github.com/blzkz/open-epomaker-panel-control"
-license=('MIT')
+license=('MIT' 'OFL-1.1')
 depends=('gcc-libs' 'glibc' 'systemd-libs' 'libxkbcommon' 'libglvnd' 'hicolor-icon-theme')
 optdepends=('libpulse: music-follow effects (parec)'
             'wayland: Wayland sessions'
@@ -50,6 +50,7 @@ package() {
   install -Dm644 packaging/icons/open-epomaker-panel.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/open-epomaker-panel.png"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 crates/epomaker-gui/assets/fonts/OFL.txt "$pkgdir/usr/share/licenses/$pkgname/FONTS-OFL.txt"
   target/release/epomaker completions bash | install -Dm644 /dev/stdin "$pkgdir/usr/share/bash-completion/completions/epomaker"
   target/release/epomaker completions zsh | install -Dm644 /dev/stdin "$pkgdir/usr/share/zsh/site-functions/_epomaker"
   target/release/epomaker completions fish | install -Dm644 /dev/stdin "$pkgdir/usr/share/fish/vendor_completions.d/epomaker.fish"
