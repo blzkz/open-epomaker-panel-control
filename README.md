@@ -6,10 +6,12 @@ on the RongYuan YC500 platform (see [Supported keyboards](#supported-keyboards))
 
 > 🇪🇸 Spanish version: [README.es.md](README.es.md)
 
-> ⚠️ **Status: experimental.** The protocol was reverse engineered from the official
-> software and is checked byte-for-byte against it (2,359 test vectors across 5 models), but it has **not yet
-> been tested on a physical keyboard**. Start with the read-only `epomaker probe` command.
-> This project is not affiliated with EPOMAKER.
+> **Status:** the protocol was reverse engineered from the official software and is checked
+> byte-for-byte against it (2,359 test vectors across 5 models). It has been **tested on a
+> real TH80 ISO Pro** (wired, Windows): reading every setting, lighting and macros work;
+> other models have not been tried on hardware yet. Make a backup
+> (`epomaker backup before.json`) before changing anything. This project is not affiliated
+> with EPOMAKER.
 
 ## Features
 
@@ -42,8 +44,8 @@ Not implemented on purpose: firmware updates and TH80 X screen uploads.
 ## Supported keyboards
 
 Wired (USB) and 2.4 GHz dongle connections are supported for every model. Each one is
-checked against byte vectors recorded from the official software; none has been tested on
-hardware yet.
+checked against byte vectors recorded from the official software. Tested on hardware so far:
+TH80 ISO Pro (id 741, wired). Self-test reports for other models are very welcome.
 
 | Model | Firmware id (wired) | `--demo-model` |
 |---|---|---|
@@ -51,7 +53,7 @@ hardware yet.
 | TH80 SOC | 1091 | `1091` |
 | TH80 SE | 886 | `886` |
 | TH80 X (screen not supported) | 928 | `928` |
-| TH80 UK | 741 | `741` |
+| TH80 ISO (UK, Spanish… legends) | 741 | `741` |
 | TH96 | 834 | `834` |
 | TH68 | 988 | `988` |
 | TH-21 (numpad) | 789 | `789` |

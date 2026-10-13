@@ -4,10 +4,12 @@ Panel de control de código abierto para teclados **EPOMAKER** en **Linux y Wind
 en Rust. Sustituye al «EPOMAKER Driver» oficial para los teclados EPOMAKER basados en la
 plataforma RongYuan YC500 (ver [Teclados soportados](#teclados-soportados)).
 
-> ⚠️ **Estado: experimental.** El protocolo se ha obtenido por ingeniería inversa del software
-> oficial y se comprueba byte a byte contra él (2359 vectores de prueba en 5 modelos), pero **todavía no se
-> ha probado con un teclado físico**. Empieza por el comando de solo lectura `epomaker probe`.
-> Este proyecto no está afiliado a EPOMAKER.
+> **Estado:** el protocolo se ha obtenido por ingeniería inversa del software oficial y se
+> comprueba byte a byte contra él (2359 vectores de prueba en 5 modelos). Se ha **probado con
+> un TH80 ISO Pro real** (por cable, en Windows): la lectura de todos los ajustes, la
+> iluminación y las macros funcionan; el resto de modelos aún no se ha probado con hardware.
+> Haz una copia (`epomaker backup antes.json`) antes de cambiar nada. Este proyecto no está
+> afiliado a EPOMAKER.
 
 ## Funciones
 
@@ -32,7 +34,8 @@ plataforma RongYuan YC500 (ver [Teclados soportados](#teclados-soportados)).
 ## Teclados soportados
 
 Todos los modelos funcionan por cable (USB) y con el receptor de 2,4 GHz. Cada uno se comprueba
-contra vectores de bytes grabados del software oficial; ninguno se ha probado aún con hardware.
+contra vectores de bytes grabados del software oficial. Probado con hardware hasta ahora: TH80
+ISO Pro (id 741, por cable). Se agradecen informes del autotest de otros modelos.
 
 | Modelo | ID de firmware (cable) | `--demo-model` |
 |---|---|---|
@@ -40,7 +43,7 @@ contra vectores de bytes grabados del software oficial; ninguno se ha probado a�
 | TH80 SOC | 1091 | `1091` |
 | TH80 SE | 886 | `886` |
 | TH80 X (sin soporte para la pantalla) | 928 | `928` |
-| TH80 UK | 741 | `741` |
+| TH80 ISO (leyendas UK, españolas…) | 741 | `741` |
 | TH96 | 834 | `834` |
 | TH68 | 988 | `988` |
 | TH-21 (teclado numérico) | 789 | `789` |

@@ -130,6 +130,8 @@ jobs:
         with:
           body_path: notes.md
           generate_release_notes: true
-          prerelease: ${{ startsWith(needs.version.outputs.version, '0.') }}
+          # only versions with a suffix (0.5.0-rc1) are pre-releases
+          prerelease: ${{ contains(needs.version.outputs.version, '-') }}
+          make_latest: ${{ !contains(needs.version.outputs.version, '-') }}
           fail_on_unmatched_files: true
           files: dist/*

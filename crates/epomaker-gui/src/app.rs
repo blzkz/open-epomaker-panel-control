@@ -496,8 +496,9 @@ impl App {
                 self.light = s.light.unwrap_or_default();
                 self.layer = Layer::Profile(s.profile);
                 let demo = if s.emulated { " [DEMO]" } else { "" };
-                self.status = format!("{} — {}{demo}", s.info.display_name, s.describe);
-                let text = format!("{}: {}{demo}", self.t("Connected"), s.info.display_name);
+                let name = s.model.display_name(&s.info.display_name);
+                self.status = format!("{name} — {}{demo}", s.describe);
+                let text = format!("{}: {name}{demo}", self.t("Connected"));
                 self.toast(ToastKind::Success, text);
                 let layers = s.layers.iter().cloned().collect();
                 self.dev = Some(DeviceState { snap: *s, layers });
@@ -634,7 +635,11 @@ impl App {
                         };
                         let legend = t(legends::current().label());
                         let line = format!("{} · {link} · FW {:04x} · {legend}", s.info.company, s.firmware);
-                        (s.info.display_name.to_uppercase(), line, if s.emulated { p.warn } else { p.ok })
+                        (
+                            s.model.display_name(&s.info.display_name).to_uppercase(),
+                            line,
+                            if s.emulated { p.warn } else { p.ok },
+                        )
                     }
                     None if self.worker.busy() => (t("Connecting…").to_string(), String::new(), p.warn),
                     None => (
@@ -1251,7 +1256,12 @@ impl App {
                 theme::card(left, t("Device"), |ui| {
                     egui::Grid::new("info").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
                         ui.weak(t("Model"));
-                        ui.label(format!("{} ({}, id {})", s.info.display_name, s.info.name, s.info.id));
+                        ui.label(format!(
+                            "{} ({}, id {})",
+                            model.display_name(&s.info.display_name),
+                            s.info.name,
+                            s.info.id
+                        ));
                         ui.end_row();
                         ui.weak(t("Connection"));
                         ui.label(RichText::new(&s.describe).small());
@@ -1744,7 +1754,7 @@ impl eframe::App for App {
                         let text = format!(
                             "v{} · {}",
                             env!("CARGO_PKG_VERSION"),
-                            self.t("Experimental: this software is not affiliated with EPOMAKER.")
+                            self.t("This software is not affiliated with EPOMAKER.")
                         );
                         ui.label(RichText::new(text).small().color(p.text_dim));
                     });

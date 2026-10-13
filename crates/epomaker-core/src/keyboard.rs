@@ -234,6 +234,10 @@ impl Keyboard {
     }
 
     pub fn set_report_rate(&mut self, profile: u8, rate: ReportRate) -> Result<(), Error> {
+        self.on_profile(profile, |kb| kb.set_report_rate_active(profile, rate))
+    }
+
+    fn set_report_rate_active(&mut self, profile: u8, rate: ReportRate) -> Result<(), Error> {
         self.link.write(&rate.encode(profile))?;
         sleep(self.link.pacing.after_big_command);
         if self.verify {
@@ -248,6 +252,10 @@ impl Keyboard {
     }
 
     pub fn set_options(&mut self, profile: u8, options: &KeyboardOptions) -> Result<(), Error> {
+        self.on_profile(profile, |kb| kb.set_options_active(profile, options))
+    }
+
+    fn set_options_active(&mut self, profile: u8, options: &KeyboardOptions) -> Result<(), Error> {
         let frame = options.encode(profile);
         self.link.write(&frame)?;
         if self.verify {
@@ -314,22 +322,60 @@ impl Keyboard {
 
     /// Remaps a single key (what the vendor app does for this family).
     pub fn set_key(&mut self, layer: Layer, matrix_index: usize, action: KeyAction) -> Result<(), Error> {
-        self.write_key(layer, matrix_index, action)?;
-        if self.verify {
-            let got = self.read_layer(layer)?;
-            check_entry(layer, matrix_index, action.to_bytes(), got.entries.get(matrix_index).copied())?;
-        }
-        Ok(())
+        self.on_layer(layer, |kb| {
+            kb.write_key(layer, matrix_index, action)?;
+            if kb.verify {
+                let got = kb.read_layer(layer)?;
+                check_entry(layer, matrix_index, action.to_bytes(), got.entries.get(matrix_index).copied())?;
+            }
+            Ok(())
+        })
     }
 
     fn write_key(&mut self, layer: Layer, matrix_index: usize, action: KeyAction) -> Result<(), Error> {
         self.check_layer(layer)?;
         self.check_index(matrix_index)?;
-        self.link.write(&encode_set_key(layer, matrix_index as u8, action))
+        self.link.write(&encode_set_key(layer, matrix_index as u8, action))?;
+        sleep(self.link.pacing.after_key);
+        Ok(())
+    }
+
+    /// Runs `f` with `profile` active on the keyboard. The firmware applies key, polling
+    /// rate and option writes to the active profile only (the vendor app always sends them
+    /// for the profile it has just activated), so another profile is activated for the
+    /// write and the previous one restored afterwards.
+    fn on_profile<R>(&mut self, profile: u8, f: impl FnOnce(&mut Self) -> Result<R, Error>) -> Result<R, Error> {
+        if profile >= settings::PROFILES {
+            return Err(Error::InvalidArgument(format!("profile {profile} (0..=2)")));
+        }
+        let active = self.profile()?;
+        if active == profile {
+            return f(self);
+        }
+        log::info!("activating profile {} for the write (profile {} was active)", profile + 1, active + 1);
+        self.link.write(&settings::encode_set_profile(profile))?;
+        sleep(self.link.pacing.after_light);
+        let result = f(self);
+        let back = self.link.write(&settings::encode_set_profile(active));
+        sleep(self.link.pacing.after_light);
+        let r = result?;
+        back?;
+        Ok(r)
+    }
+
+    fn on_layer<R>(&mut self, layer: Layer, f: impl FnOnce(&mut Self) -> Result<R, Error>) -> Result<R, Error> {
+        match layer {
+            Layer::Profile(p) => self.on_profile(p, f),
+            Layer::Fn(_) => f(self),
+        }
     }
 
     /// Writes a whole layer.
     pub fn write_layer(&mut self, layer: Layer, matrix: &KeyMatrix) -> Result<(), Error> {
+        self.on_layer(layer, |kb| kb.write_layer_active(layer, matrix))
+    }
+
+    fn write_layer_active(&mut self, layer: Layer, matrix: &KeyMatrix) -> Result<(), Error> {
         self.check_layer(layer)?;
         let mut bytes = matrix.to_bytes();
         bytes.resize(self.model.default_matrix.len(), 0);
@@ -346,6 +392,10 @@ impl Keyboard {
 
     /// Restores the factory mapping of one layer, key by key.
     pub fn reset_layer(&mut self, layer: Layer) -> Result<(), Error> {
+        self.on_layer(layer, |kb| kb.reset_layer_active(layer))
+    }
+
+    fn reset_layer_active(&mut self, layer: Layer) -> Result<(), Error> {
         let current = self.read_layer(layer)?;
         for i in 0..self.model.matrix_len() {
             let def = self.model.default_entry(i).unwrap_or_default();

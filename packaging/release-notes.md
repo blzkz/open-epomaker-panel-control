@@ -1,7 +1,6 @@
-> ⚠️ Experimental: the protocol is verified against the official software byte for byte
-> and reading a TH80 has been confirmed on real hardware; writing is still being validated.
-> Start with `epomaker probe` (read-only) and make a backup (`epomaker backup before.json`)
-> before changing anything. Not affiliated with EPOMAKER.
+> Tested on a real TH80 ISO Pro (wired, Windows); the other models are verified against the
+> official software byte for byte but have not been tried on hardware yet. Make a backup
+> (`epomaker backup before.json`) before changing anything. Not affiliated with EPOMAKER.
 >
 > What's new: see the [changelog](https://github.com/blzkz/open-epomaker-panel-control/blob/v{{VERSION}}/CHANGELOG.md).
 

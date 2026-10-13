@@ -346,6 +346,11 @@ fn keymap(kb: &mut Keyboard) -> StepResult {
     let test = KeyAction::key(code);
     let hex = format!("{:02x}{:02x}{:02x}{:02x}", original[0], original[1], original[2], original[3]);
     r.details.push(format!("key {label} (#{index}) on profile {}: {hex}", PROFILES));
+    if let Ok(active) = kb.profile() {
+        if active != PROFILES - 1 {
+            r.details.push(format!("profile {} is active: profile {PROFILES} is activated for the writes", active + 1));
+        }
+    }
     r.details.push(format!("test: {}", crate::keycodes::display(code)));
     if let Err(e) = kb.set_key(layer, index, test) {
         r.fail(format!("test write: {e}"));
@@ -427,6 +432,9 @@ pub fn markdown(device: &DeviceSummary, steps: &[StepResult], app: &str) -> Stri
     let _ = writeln!(s, "### Hardware self-test: {}\n", d.display_name);
     let _ = writeln!(s, "- App: {app} ({} {})", std::env::consts::OS, std::env::consts::ARCH);
     let _ = writeln!(s, "- Model: {} (`{}`, database id {})", d.display_name, d.model, d.database_id);
+    if d.model.ends_with("_uk") {
+        let _ = writeln!(s, "- Layout: ISO (every ISO version reports the id of the UK one)");
+    }
     let _ = writeln!(s, "- Raw device id: {} (`{:#010x}`)", d.raw_id, d.raw_id);
     let fw = d.firmware.map(|f| format!("`{f:#06x}`")).unwrap_or_else(|| "unknown".into());
     let _ = writeln!(s, "- Firmware: {fw}");
