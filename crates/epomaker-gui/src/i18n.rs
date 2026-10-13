@@ -216,8 +216,8 @@ const ES: &[(&str, &str)] = &[
     ("Done", "Hecho"),
     ("Error", "Error"),
     (
-        "Experimental: this software is not affiliated with EPOMAKER.",
-        "Experimental: este software no está afiliado a EPOMAKER.",
+        "This software is not affiliated with EPOMAKER.",
+        "Este software no está afiliado a EPOMAKER.",
     ),
     (
         "The effect needs the host to stream audio/screen data; the keyboard will stay dark without it.",

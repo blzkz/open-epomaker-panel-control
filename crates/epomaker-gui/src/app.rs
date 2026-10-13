@@ -1754,7 +1754,7 @@ impl eframe::App for App {
                         let text = format!(
                             "v{} · {}",
                             env!("CARGO_PKG_VERSION"),
-                            self.t("Experimental: this software is not affiliated with EPOMAKER.")
+                            self.t("This software is not affiliated with EPOMAKER.")
                         );
                         ui.label(RichText::new(text).small().color(p.text_dim));
                     });
