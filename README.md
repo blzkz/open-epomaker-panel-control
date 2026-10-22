@@ -13,6 +13,14 @@ on the RongYuan YC500 platform (see [Supported keyboards](#supported-keyboards))
 > (`epomaker backup before.json`) before changing anything. This project is not affiliated
 > with EPOMAKER.
 
+<p align="center">
+  <img src="docs/screenshots/en/lighting.png" alt="Lighting tab: effect cards, live preview of the Wave effect on a TH80 ISO" width="880">
+</p>
+<p align="center">
+  <img src="docs/screenshots/en/lighting-animation.gif" alt="Animated preview of the rainbow Wave effect" width="572"><br>
+  <sub>Every effect is previewed live on a drawing of your keyboard before it is sent.</sub>
+</p>
+
 ## Features
 
 | | GUI | CLI |
@@ -40,6 +48,29 @@ when the focused application matches a rule, keeps the music / screen / CPU effe
 running, warns when a wireless keyboard's battery is low and reconnects automatically.
 
 Not implemented on purpose: firmware updates and TH80 X screen uploads.
+
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%" valign="top"><img src="docs/screenshots/en/per-key-colors.png" alt="Per-key colors"><br><b>Per-key colors</b> — Paint keys, select boxes or rows, fill them or apply gradients.</td>
+    <td width="50%" valign="top"><img src="docs/screenshots/en/key-mapping.png" alt="Key mapping"><br><b>Key mapping</b> — Click a key and pick its new action: keys, shortcuts, media, mouse, macros.</td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top"><img src="docs/screenshots/en/macros.png" alt="Macros"><br><b>Macros</b> — Record or edit key sequences, delays and mouse actions; export them as files.</td>
+    <td width="50%" valign="top"><img src="docs/screenshots/en/key-tester.png" alt="Key tester"><br><b>Key tester</b> — See what every key sends and spot switch chatter.</td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top"><img src="docs/screenshots/en/tray-agent.png" alt="Tray agent"><br><b>Tray agent</b> — Switch profiles per application, keep PC effects running, low-battery warnings.</td>
+    <td width="50%" valign="top"><img src="docs/screenshots/en/settings.png" alt="Settings"><br><b>Settings</b> — Polling rate, per-profile options, debounce and sleep timers.</td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top"><img src="docs/screenshots/en/diagnostics.png" alt="Diagnostics"><br><b>Diagnostics</b> — Hardware self-test with a report ready for a GitHub issue.</td>
+    <td width="50%" valign="top"><img src="docs/screenshots/en/light-theme.png" alt="Light theme and accent colors"><br><b>Light theme and accent colors</b> — Dark, light or system theme, five accent colors, keycap legends for your layout.</td>
+  </tr>
+</table>
+
+<sub>Screenshots of the demo keyboard (a TH80 ISO emulated in software), so they can be regenerated: `EPOMAKER_AUTOSHOT_SET=readme EPOMAKER_AUTOSHOT_MODEL=741 EPOMAKER_AUTOSHOT=<dir> cargo run -p epomaker-gui --features autoshot`.</sub>
 
 ## Supported keyboards
 

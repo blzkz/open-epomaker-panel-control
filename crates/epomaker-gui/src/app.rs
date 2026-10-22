@@ -264,20 +264,34 @@ pub struct App {
 #[cfg(feature = "autoshot")]
 struct AutoShot {
     dir: std::path::PathBuf,
+    /// Screens to render (`EPOMAKER_AUTOSHOT_SET=readme` picks the README set).
+    list: &'static [&'static str],
+    /// No toasts (README pictures).
+    clean: bool,
     step: usize,
     frames: u32,
     waiting: bool,
+    /// Frames saved so far by the "anim" step, and when the last one was requested.
+    anim: u32,
+    last_request: f64,
 }
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> App {
         let worker = Worker::new(cc.egui_ctx.clone());
         #[cfg(feature = "autoshot")]
-        let autoshot = std::env::var_os("EPOMAKER_AUTOSHOT").map(|d| AutoShot {
-            dir: d.into(),
-            step: 0,
-            frames: 0,
-            waiting: false,
+        let autoshot = std::env::var_os("EPOMAKER_AUTOSHOT").map(|d| {
+            let readme = std::env::var("EPOMAKER_AUTOSHOT_SET").is_ok_and(|v| v == "readme");
+            AutoShot {
+                dir: d.into(),
+                list: if readme { &Self::README_SHOTS } else { &Self::SHOTS },
+                clean: readme,
+                step: 0,
+                frames: 0,
+                waiting: false,
+                anim: 0,
+                last_request: 0.0,
+            }
         });
         #[cfg(feature = "autoshot")]
         let fresh = autoshot.is_some();
@@ -769,9 +783,20 @@ impl App {
                 format!("{} {name} · {:04x}:{:04x}", icon::USB, c.vid, c.pid)
             }
             Some(Target::Demo(id)) => {
-                let d = Database::get().device_by_id(*id);
-                let (name, key) = d.map(|d| (d.display_name.as_str(), d.name.as_str())).unwrap_or_default();
-                format!("{} {name} ({key}) · {}", icon::FLASK, tr(lang, "demo, no hardware"))
+                let db = Database::get();
+                let name = db
+                    .device_by_id(*id)
+                    .map(|d| {
+                        let name = db.model(&d.name).map(|m| m.display_name(&d.display_name)).unwrap_or_default();
+                        // TH80 and TH80 SOC share their display name
+                        if d.name.ends_with("_soc") {
+                            format!("{name} SOC")
+                        } else {
+                            name
+                        }
+                    })
+                    .unwrap_or_default();
+                format!("{} {name} · {}", icon::FLASK, tr(lang, "demo, no hardware"))
             }
             None => tr(lang, "No keyboard connected").to_string(),
         };
@@ -1552,11 +1577,46 @@ impl App {
         "light-theme",
     ];
 
+    /// Pictures for the README: no toasts, and an animation of the lighting preview
+    /// ("anim" saves `ANIM_FRAMES` frames, `ANIM_STEP` seconds apart).
+    const README_SHOTS: [&'static str; 10] = [
+        "readme-lighting",
+        "anim",
+        "colors",
+        "keymap",
+        "macros",
+        "tester",
+        "agent",
+        "settings",
+        "diagnostics",
+        "readme-light-theme",
+    ];
+    const ANIM_FRAMES: u32 = 48;
+    const ANIM_STEP: f64 = 0.08;
+
     /// Prepares the window for screenshot `name`.
     fn autoshot_setup(&mut self, name: &str, ctx: &egui::Context) {
         use epomaker_core::keymap::Modifier;
         use epomaker_core::lighting::{LightMode, Rgb};
         match name {
+            "readme-lighting" | "anim" => {
+                self.tab = Tab::Lighting;
+                self.worker.set_live(None, None);
+                self.light = LightEffect {
+                    mode: LightMode::Wave,
+                    speed: 3,
+                    brightness: 4,
+                    dazzle: true,
+                    ..LightEffect::default()
+                };
+            }
+            "readme-light-theme" => {
+                self.tab = Tab::Colors;
+                self.theme = ThemeChoice::Light;
+                self.accent = Accent::Violet;
+                theme::apply(ctx, Accent::Violet);
+                ctx.set_theme(self.theme.egui());
+            }
             "lighting" => self.tab = Tab::Lighting,
             "lighting-ripple" => {
                 self.light = LightEffect {
@@ -1602,6 +1662,8 @@ impl App {
             }
             "macros" => {
                 self.tab = Tab::Macros;
+                // pictures must not show the path of the machine they were made on
+                self.macro_file = "~/epomaker-macro.json".into();
                 self.macros.insert(
                     0,
                     Macro {
@@ -1665,6 +1727,9 @@ impl App {
     fn autoshot(&mut self, ctx: &egui::Context) {
         let Some(mut shot) = self.autoshot.take() else { return };
         ctx.request_repaint();
+        if shot.clean {
+            self.toasts.clear();
+        }
         if self.dev.is_none() || self.worker.busy() {
             self.autoshot = Some(shot);
             return;
@@ -1675,30 +1740,43 @@ impl App {
                 _ => None,
             })
         });
+        let name = shot.list[shot.step];
         if let Some(img) = saved {
-            let name = format!("{}-{}-{:?}.png", shot.step, Self::SHOTS[shot.step], self.lang).to_lowercase();
-            let file = std::io::BufWriter::new(std::fs::File::create(shot.dir.join(name)).expect("create png"));
+            let file = if name == "anim" {
+                format!("anim-{:03}.png", shot.anim)
+            } else {
+                format!("{}-{}-{:?}.png", shot.step, name, self.lang).to_lowercase()
+            };
+            let file = std::io::BufWriter::new(std::fs::File::create(shot.dir.join(file)).expect("create png"));
             let mut enc = png::Encoder::new(file, img.size[0] as u32, img.size[1] as u32);
             enc.set_color(png::ColorType::Rgba);
             enc.set_depth(png::BitDepth::Eight);
             let mut w = enc.write_header().expect("png header");
             let raw: Vec<u8> = img.pixels.iter().flat_map(|p| p.to_array()).collect();
             w.write_image_data(&raw).expect("png data");
-            shot.step += 1;
             shot.waiting = false;
-            shot.frames = 0;
+            if name == "anim" && shot.anim + 1 < Self::ANIM_FRAMES {
+                shot.anim += 1;
+            } else {
+                shot.step += 1;
+                shot.frames = 0;
+            }
         }
-        if shot.step >= Self::SHOTS.len() {
+        if shot.step >= shot.list.len() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         }
+        let name = shot.list[shot.step];
         if shot.frames == 0 {
-            self.autoshot_setup(Self::SHOTS[shot.step], ctx);
+            self.autoshot_setup(name, ctx);
         }
         shot.frames += 1;
-        if !shot.waiting && shot.frames > 10 {
+        let now = ctx.input(|i| i.time);
+        let due = name != "anim" || now - shot.last_request >= Self::ANIM_STEP;
+        if !shot.waiting && shot.frames > 10 && due {
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
             shot.waiting = true;
+            shot.last_request = now;
         }
         self.autoshot = Some(shot);
     }

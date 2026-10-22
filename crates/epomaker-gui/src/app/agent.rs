@@ -184,7 +184,7 @@ impl App {
                 *config = Config::load();
                 state.dirty = false;
             }
-            ui.weak(agent_config::path().display().to_string());
+            ui.weak(tilde(&agent_config::path()));
         });
         if let Some(m) = &state.message {
             ui.label(m);
@@ -220,4 +220,13 @@ fn shell_split(s: &str) -> Vec<String> {
         out.push(cur);
     }
     out
+}
+
+/// `path` with the home directory shown as `~`.
+fn tilde(path: &std::path::Path) -> String {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(std::path::PathBuf::from);
+    match home.as_deref().and_then(|h| path.strip_prefix(h).ok()) {
+        Some(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()),
+        None => path.display().to_string(),
+    }
 }

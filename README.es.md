@@ -11,6 +11,14 @@ plataforma RongYuan YC500 (ver [Teclados soportados](#teclados-soportados)).
 > Haz una copia (`epomaker backup antes.json`) antes de cambiar nada. Este proyecto no está
 > afiliado a EPOMAKER.
 
+<p align="center">
+  <img src="docs/screenshots/es/lighting.png" alt="Pestaña de iluminación: tarjetas de efectos y vista previa del efecto Ola en un TH80 ISO" width="880">
+</p>
+<p align="center">
+  <img src="docs/screenshots/es/lighting-animation.gif" alt="Vista previa animada del efecto Ola en modo arcoíris" width="572"><br>
+  <sub>Cada efecto se previsualiza en vivo sobre un dibujo de tu teclado antes de enviarlo.</sub>
+</p>
+
 ## Funciones
 
 - Detección del modelo a partir del ID del firmware.
@@ -30,6 +38,29 @@ plataforma RongYuan YC500 (ver [Teclados soportados](#teclados-soportados)).
 - **Agente de bandeja** (`epomaker-agent`): cambia de perfil según la aplicación activa,
   mantiene los efectos en vivo, avisa de batería baja y se reconecta solo. Las reglas están en
   `~/.config/open-epomaker-panel/agent.json`; funciona en Windows, X11 y KDE Plasma (también Wayland).
+
+## Capturas
+
+<table>
+  <tr>
+    <td width="50%" valign="top"><img src="docs/screenshots/es/per-key-colors.png" alt="Colores por tecla"><br><b>Colores por tecla</b> — Pinta teclas, selecciona zonas o filas, rellénalas o aplica degradados.</td>
+    <td width="50%" valign="top"><img src="docs/screenshots/es/key-mapping.png" alt="Asignación de teclas"><br><b>Asignación de teclas</b> — Haz clic en una tecla y elige su nueva acción: teclas, atajos, multimedia, ratón, macros.</td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top"><img src="docs/screenshots/es/macros.png" alt="Macros"><br><b>Macros</b> — Graba o edita secuencias de teclas, pausas y acciones de ratón; expórtalas a archivos.</td>
+    <td width="50%" valign="top"><img src="docs/screenshots/es/key-tester.png" alt="Probador de teclas"><br><b>Probador de teclas</b> — Mira qué envía cada tecla y detecta rebotes de los interruptores.</td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top"><img src="docs/screenshots/es/tray-agent.png" alt="Agente de bandeja"><br><b>Agente de bandeja</b> — Cambia de perfil según la aplicación, mantiene los efectos del PC y avisa con la batería baja.</td>
+    <td width="50%" valign="top"><img src="docs/screenshots/es/settings.png" alt="Ajustes"><br><b>Ajustes</b> — Frecuencia de sondeo, opciones por perfil, antirrebote y reposo.</td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top"><img src="docs/screenshots/es/diagnostics.png" alt="Diagnóstico"><br><b>Diagnóstico</b> — Autotest del hardware con un informe listo para una incidencia de GitHub.</td>
+    <td width="50%" valign="top"><img src="docs/screenshots/es/light-theme.png" alt="Tema claro y colores de acento"><br><b>Tema claro y colores de acento</b> — Tema oscuro, claro o del sistema, cinco colores de acento y leyendas según tu distribución.</td>
+  </tr>
+</table>
+
+<sub>Capturas del teclado de demostración (un TH80 ISO emulado por software), para poder regenerarlas: `EPOMAKER_AUTOSHOT_SET=readme EPOMAKER_AUTOSHOT_MODEL=741 EPOMAKER_AUTOSHOT=<dir> cargo run -p epomaker-gui --features autoshot`.</sub>
 
 ## Teclados soportados
 
