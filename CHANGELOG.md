@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.2 — 2026-10-22
+
+- README with screenshots of every tab and an animated preview of the lighting effects,
+  in English and Spanish (`docs/screenshots`). The GUI's screenshot mode gains a README
+  set (`EPOMAKER_AUTOSHOT_SET=readme`) to regenerate them.
+- Demo keyboards are listed by their display name ("TH80 ISO" instead of `yc500_th80_uk`).
+- The tray agent tab shows its configuration path with `~` for the home directory.
+
 ## 0.4.1 — 2026-10-13
 
 - Key remaps, polling rate and options for a profile that is not the active one did not
