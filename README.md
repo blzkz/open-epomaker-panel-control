@@ -122,6 +122,11 @@ cargo build --release
 
 This builds `target/release/epomaker-panel` (GUI) and `target/release/epomaker` (CLI).
 
+Cargo never deletes old build artifacts, so `target/` keeps growing while you develop.
+Debug builds carry little debug info to keep it small, and `tools/trim-target.sh` removes
+what is rebuilt on demand (incremental caches, cross builds, packaging leftovers), or
+everything once `target/` is over 10 GB (`TRIM_LIMIT_GB`); `--all` runs `cargo clean`.
+
 ### Linux permissions (only when not using a package)
 
 Regular users cannot open HID devices by default. Install the udev rule (and the

@@ -108,6 +108,12 @@ cargo build --release
 packaging/linux/install.sh   # Linux: binarios, regla udev y acceso directo
 ```
 
+Cargo nunca borra compilaciones antiguas, así que `target/` crece mientras desarrollas. Las
+compilaciones de depuración llevan poca información de depuración para que ocupe menos, y
+`tools/trim-target.sh` borra lo que se regenera solo (cachés incrementales, compilaciones
+cruzadas, restos de empaquetado), o todo si `target/` pasa de 10 GB (`TRIM_LIMIT_GB`);
+`--all` ejecuta `cargo clean`.
+
 En Windows no hace falta ningún driver. Ejecuta `epomaker-panel.exe` y cierra antes el
 software oficial de EPOMAKER.
 

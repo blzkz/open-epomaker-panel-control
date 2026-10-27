@@ -19,3 +19,12 @@ log = "0.4"
 clap = { version = "4.5", features = ["derive"] }
 env_logger = "0.11"
 eframe = "0.36"
+
+# Keep target/ small while developing (see tools/trim-target.sh): line tables are enough for
+# backtraces in our crates, and dependencies get no debug info at all. Release builds are
+# not affected.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
